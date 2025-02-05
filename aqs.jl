@@ -38,8 +38,8 @@ function default_params()
         0.5,       # f_dec
         0.1,       # alpha0
         1e-5,      # dgamma (strain increment)
-        1e-4,      # fire_tol
-        100000,    # fire_max_steps
+        1e-5,      # fire_tol
+        500000,    # fire_max_steps
         0.0,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2        # non_additivity
     )
