@@ -41,7 +41,7 @@ function default_params()
         1e-5,      # fire_tol
         500000,    # fire_max_steps
         0.0,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
-        0.2        # non_additivity
+        0.2,        # non_additivity
     )
 end
 
@@ -124,7 +124,9 @@ end
 ##########################################
 # Pairwise Potential and Force Functions #
 ##########################################
-function pair_potential_energy(r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams)
+function pair_potential_energy(
+    r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams
+)
     σ_eff = 0.5 * (sigma_i + sigma_j)
     σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
     if r < params.r_cut * σ_eff
@@ -140,13 +142,16 @@ function pair_potential_energy(r::Float64, sigma_i::Float64, sigma_j::Float64, p
     end
 end
 
-function pair_force(r_vec::Vec2, r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams)
+function pair_force(
+    r_vec::Vec2, r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams
+)
     σ_eff = 0.5 * (sigma_i + sigma_j)
     σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
     if r < params.r_cut * σ_eff
         c2 = 48.0 / (params.r_cut^14)
         c4 = -21.0 / (params.r_cut^16)
-        force_mag = 12.0 * σ_eff^12 / r^13 - 2.0 * c2 * r / (σ_eff^2) - 4.0 * c4 * r^3 / (σ_eff^4)
+        force_mag =
+            12.0 * σ_eff^12 / r^13 - 2.0 * c2 * r / (σ_eff^2) - 4.0 * c4 * r^3 / (σ_eff^4)
         return (force_mag * r_vec) / r
     else
         return Vec2(0.0, 0.0)
@@ -173,8 +178,12 @@ end
 ##########################################
 # Compute Forces and Total Energy        #
 ##########################################
-function compute_forces(positions::Vector{Vec2}, diameters::Vector{Float64},
-    gamma::Float64, params::SimulationParams)
+function compute_forces(
+    positions::Vector{Vec2},
+    diameters::Vector{Float64},
+    gamma::Float64,
+    params::SimulationParams,
+)
     Np = length(positions)
     forces = [Vec2(0.0, 0.0) for _ in 1:Np]
     energy = 0.0
@@ -216,8 +225,12 @@ end
 ##########################################
 # Compute Stress Tensor                  #
 ##########################################
-function compute_stress_tensor(positions::Vector{Vec2}, diameters::Vector{Float64},
-    gamma::Float64, params::SimulationParams)
+function compute_stress_tensor(
+    positions::Vector{Vec2},
+    diameters::Vector{Float64},
+    gamma::Float64,
+    params::SimulationParams,
+)
     V = params.Lx * params.Ly
     stress = zeros(2, 2)
     cell_list, n_cells_x, n_cells_y, _, _ = build_cell_list(positions, params)
@@ -257,8 +270,9 @@ end
 ##########################################
 # Plastic Event Detection                #
 ##########################################
-function plastic_event_detected(e_prev::Float64, e_current::Float64,
-    dgamma::Float64, threshold::Float64)
+function plastic_event_detected(
+    e_prev::Float64, e_current::Float64, dgamma::Float64, threshold::Float64
+)
     dE_dgamma = (e_current - e_prev) / dgamma
     return dE_dgamma < threshold
 end
@@ -266,8 +280,12 @@ end
 ##########################################
 # FIRE Energy Minimization Algorithm     #
 ##########################################
-function fire_minimization!(positions::Vector{Vec2}, diameters::Vector{Float64},
-    gamma::Float64, params::SimulationParams)
+function fire_minimization!(
+    positions::Vector{Vec2},
+    diameters::Vector{Float64},
+    gamma::Float64,
+    params::SimulationParams,
+)
     Np = length(positions)
     v = [Vec2(0.0, 0.0) for _ in 1:Np]
     dt = params.dt_initial
@@ -277,7 +295,7 @@ function fire_minimization!(positions::Vector{Vec2}, diameters::Vector{Float64},
     no_progress_counter = 0
     best_F_norm = Inf
 
-    for step in 1:params.fire_max_steps
+    for step in 1:(params.fire_max_steps)
         forces, energy = compute_forces(positions, diameters, gamma, params)
         F_norm = sqrt(sum(norm(f)^2 for f in forces))
         if F_norm < params.fire_tol
@@ -338,11 +356,18 @@ end
 ##############################################
 # Configuration Saving Function
 ##############################################
-function save_configuration(filename::String, positions::Vector{Vec2},
-    diameters::Vector{Float64}, params::SimulationParams)
+function save_configuration(
+    filename::String,
+    positions::Vector{Vec2},
+    diameters::Vector{Float64},
+    params::SimulationParams,
+)
     open(filename, "w") do f
         println(f, length(positions))
-        println(f, "Lattice=\"$(params.Lx) 0 0 $(params.Ly)\" Properties=species:S:1:pos:R:3:radius:R:1")
+        println(
+            f,
+            "Lattice=\"$(params.Lx) 0 0 $(params.Ly)\" Properties=species:S:1:pos:R:3:radius:R:1",
+        )
         for i in 1:length(positions)
             x = positions[i][1]
             y = positions[i][2]
@@ -371,7 +396,7 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         println("  Lx = $(params.Lx), Ly = $(params.Ly)")
     else
         params.N = params.N
-        positions = [Vec2(rand() * params.Lx, rand() * params.Ly) for _ in 1:params.N]
+        positions = [Vec2(rand() * params.Lx, rand() * params.Ly) for _ in 1:(params.N)]
         diameters = ones(Float64, params.N)
     end
 
@@ -403,7 +428,9 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         println("Stress tensor:")
         println(compute_stress_tensor(positions, diameters, gamma, params))
 
-        if plastic_event_detected(e_prev, e_current, params.dgamma, params.plastic_threshold)
+        if plastic_event_detected(
+            e_prev, e_current, params.dgamma, params.plastic_threshold
+        )
             println("Plastic event detected at γ = $gamma (step $step)!")
             println("Reversing strain direction.")
             params.dgamma = -params.dgamma

@@ -85,8 +85,12 @@ function get_neighbor_indices(cell_list::CellList, ci::Int, cj::Int)
 end
 
 # Update a single particle's cell membership if it has moved.
-function update_particle_cell!(cell_list::CellList, particle_cells::Vector{Tuple{Int,Int}},
-    particles::Vector{Particle}, i::Int)
+function update_particle_cell!(
+    cell_list::CellList,
+    particle_cells::Vector{Tuple{Int,Int}},
+    particles::Vector{Particle},
+    i::Int,
+)
     new_cell = cell_coords(particles[i].pos, cell_list.cell_size, cell_list.n_cells)
     old_cell = particle_cells[i]
     if new_cell != old_cell
@@ -131,7 +135,9 @@ function pair_energy(p1::Particle, p2::Particle, L::Float64, r_cut::Float64)
 end
 
 # Compute the local energy of particle i (summing interactions with nearby particles).
-function local_energy(i::Int, particles::Vector{Particle}, cell_list::CellList, r_cut::Float64)
+function local_energy(
+    i::Int, particles::Vector{Particle}, cell_list::CellList, r_cut::Float64
+)
     pos = particles[i].pos
     (ci, cj) = cell_coords(pos, cell_list.cell_size, cell_list.n_cells)
     neighbors = get_neighbor_indices(cell_list, ci, cj)
@@ -145,8 +151,14 @@ function local_energy(i::Int, particles::Vector{Particle}, cell_list::CellList, 
 end
 
 # Compute the local energy for a proposed move of particle i (with a new position).
-function local_energy_proposed(new_pos::SVector{2,Float64}, sigma::Float64, i::Int,
-    particles::Vector{Particle}, cell_list::CellList, r_cut::Float64)
+function local_energy_proposed(
+    new_pos::SVector{2,Float64},
+    sigma::Float64,
+    i::Int,
+    particles::Vector{Particle},
+    cell_list::CellList,
+    r_cut::Float64,
+)
     (ci, cj) = cell_coords(new_pos, cell_list.cell_size, cell_list.n_cells)
     neighbors = get_neighbor_indices(cell_list, ci, cj)
     E = 0.0
@@ -171,8 +183,9 @@ function local_energy_proposed(new_pos::SVector{2,Float64}, sigma::Float64, i::I
 end
 
 # For swap moves: compute the local energy of particle i excluding its interaction with 'exclude'.
-function local_energy_excluding(i::Int, particles::Vector{Particle},
-    cell_list::CellList, r_cut::Float64, exclude::Int)
+function local_energy_excluding(
+    i::Int, particles::Vector{Particle}, cell_list::CellList, r_cut::Float64, exclude::Int
+)
     (ci, cj) = cell_coords(particles[i].pos, cell_list.cell_size, cell_list.n_cells)
     neighbors = get_neighbor_indices(cell_list, ci, cj)
     E = 0.0
@@ -185,8 +198,14 @@ function local_energy_excluding(i::Int, particles::Vector{Particle},
 end
 
 # For swap moves: compute the local energy for a temporary state.
-function local_energy_custom(temp_particle::Particle, particles::Vector{Particle},
-    cell_list::CellList, r_cut::Float64, i::Int, exclude::Int)
+function local_energy_custom(
+    temp_particle::Particle,
+    particles::Vector{Particle},
+    cell_list::CellList,
+    r_cut::Float64,
+    i::Int,
+    exclude::Int,
+)
     (ci, cj) = cell_coords(temp_particle.pos, cell_list.cell_size, cell_list.n_cells)
     neighbors = get_neighbor_indices(cell_list, ci, cj)
     E = 0.0
@@ -208,9 +227,15 @@ Performs one Monte Carlo move. With probability `p_swap` a swap move (exchanging
 is attempted; otherwise a displacement move is attempted.
 Returns a tuple `(move_type, accepted)` where `move_type` is either `:swap` or `:disp`.
 """
-function mc_step!(particles::Vector{Particle}, cell_list::CellList,
+function mc_step!(
+    particles::Vector{Particle},
+    cell_list::CellList,
     particle_cells::Vector{Tuple{Int,Int}},
-    beta::Float64, delta::Float64, p_swap::Float64, r_cut::Float64)
+    beta::Float64,
+    delta::Float64,
+    p_swap::Float64,
+    r_cut::Float64,
+)
     N = length(particles)
     if rand() < p_swap
         # ----- SWAP MOVE -----
@@ -249,7 +274,9 @@ function mc_step!(particles::Vector{Particle}, cell_list::CellList,
         dy = (rand() - 0.5) * 2 * delta
         new_pos = old_particle.pos + SVector(dx, dy)
         new_pos = apply_pbc(new_pos, cell_list.L)
-        E_new = local_energy_proposed(new_pos, old_particle.sigma, i, particles, cell_list, r_cut)
+        E_new = local_energy_proposed(
+            new_pos, old_particle.sigma, i, particles, cell_list, r_cut
+        )
         ΔE = E_new - E_old
         if rand() < exp(-beta * ΔE)
             particles[i] = Particle(new_pos, old_particle.sigma)
@@ -288,7 +315,9 @@ end
 Adjusts the maximum displacement Δ so that the acceptance ratio for displacement moves
 approaches the target (default 40%). If no moves were accepted in the interval, Δ is halved.
 """
-function adjust_delta(delta::Float64, disp_accept::Int, disp_attempt::Int; target::Float64=0.4)
+function adjust_delta(
+    delta::Float64, disp_accept::Int, disp_attempt::Int; target::Float64=0.4
+)
     if disp_attempt == 0
         return delta
     end
@@ -312,11 +341,16 @@ Writes a snapshot of the current system in extended XYZ format. The file will ha
  - One line per particle containing: species, x, y, z (here z is 0.0), and the particle’s radius.
 This format can be loaded into OVITO.
 """
-function write_snapshot_xyz(filename::String, particles::Vector{Particle}, step::Int, boxl::Float64)
+function write_snapshot_xyz(
+    filename::String, particles::Vector{Particle}, step::Int, boxl::Float64
+)
     open(filename, "w") do io
         println(io, length(particles))
         # The header includes a lattice definition (for 2D, z is ignored) and the step number.
-        println(io, "Lattice=\"$(boxl) 0 0 $(boxl)\" Properties=species:S:1:pos:R:3:radius:R:1 step=$step")
+        println(
+            io,
+            "Lattice=\"$(boxl) 0 0 $(boxl)\" Properties=species:S:1:pos:R:3:radius:R:1 step=$step",
+        )
         for p in particles
             # Here we use "A" as species and report the radius as sigma/2.
             println(io, "A $(p.pos[1]) $(p.pos[2]) 0.0 $(p.sigma/2.0)")
@@ -345,7 +379,7 @@ function check_polidispersity(particles)
     mean_diameter = mean(all_sigmas)
     stdev_diameter = std(all_sigmas)
     polydispersity = stdev_diameter / mean_diameter
-    println("Polydispersity in the system: $(polydispersity)")
+    return println("Polydispersity in the system: $(polydispersity)")
 end
 
 """
@@ -389,8 +423,16 @@ Runs the Monte Carlo simulation.
 - print_interval (keyword): Frequency (in steps) to print diagnostics, log energy, and write a snapshot.
 Returns the final particle configuration and an array of per–particle energies.
 """
-function run_simulation(N::Int, L::Float64, beta::Float64, delta::Float64,
-    p_swap::Float64, nsteps::Int, r_cut::Float64; print_interval::Int=1000)
+function run_simulation(
+    N::Int,
+    L::Float64,
+    beta::Float64,
+    delta::Float64,
+    p_swap::Float64,
+    nsteps::Int,
+    r_cut::Float64;
+    print_interval::Int=1000,
+)
     # Initialize particles on a square lattice to avoid overlaps.
     particles = Particle[]
     (x, y) = initialize_lattice(N, L)
@@ -423,7 +465,9 @@ function run_simulation(N::Int, L::Float64, beta::Float64, delta::Float64,
     end
 
     for step in 1:nsteps
-        move_type, accepted = mc_step!(particles, cell_list, particle_cells, beta, delta, p_swap, r_cut)
+        move_type, accepted = mc_step!(
+            particles, cell_list, particle_cells, beta, delta, p_swap, r_cut
+        )
         if move_type == :disp
             disp_attempt += 1
             if accepted
@@ -443,8 +487,10 @@ function run_simulation(N::Int, L::Float64, beta::Float64, delta::Float64,
         if step % print_interval == 0
             disp_ratio = (disp_attempt > 0) ? disp_accept / disp_attempt : 0.0
             swap_ratio = (swap_attempt > 0) ? swap_accept / swap_attempt : 0.0
-            println("Step $step: disp_acceptance = $(round(disp_ratio*100, digits=2))%, " *
-                    "swap_acceptance = $(round(swap_ratio*100, digits=2))%, Δ = $(round(delta, digits=4))")
+            println(
+                "Step $step: disp_acceptance = $(round(disp_ratio*100, digits=2))%, " *
+                "swap_acceptance = $(round(swap_ratio*100, digits=2))%, Δ = $(round(delta, digits=4))",
+            )
             # Write energy to file.
             open("energy.txt", "a") do io
                 println(io, "$step $(energies[step])")
@@ -480,8 +526,10 @@ function main()
     r_cut = 1.25                     # Base cutoff distance for the potential.
 
     # Run the simulation.
-    particles, energies = run_simulation(N, L, beta, delta, p_swap, nsteps, r_cut; print_interval=1000)
-    println("Final energy: ", energies[end])
+    particles, energies = run_simulation(
+        N, L, beta, delta, p_swap, nsteps, r_cut; print_interval=1000
+    )
+    return println("Final energy: ", energies[end])
 end
 
 main()
