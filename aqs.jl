@@ -420,4 +420,4 @@ end
 ###########################
 # Run the Simulation      #
 ###########################
-run_athermal_quasistatic("snapshot_step_500000.xyz")
+run_athermal_quasistatic("ktemp=0.12_n=256/snapshot_step_500000.xyz")

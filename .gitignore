@@ -1,3 +1,6 @@
 # Ignore data files
 *.xyz
 *.txt
+
+# We don't need the manifest file
+Manifest.toml
