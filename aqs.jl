@@ -39,7 +39,7 @@ function default_params()
         0.1,       # alpha0
         1e-5,      # dgamma (strain increment)
         1e-5,      # fire_tol
-        500000,    # fire_max_steps
+        1000000,    # fire_max_steps
         0.0,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,        # non_additivity
     )
@@ -412,6 +412,9 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     # Save the initial configuration.
     save_configuration("initial_configuration.xyz", positions, diameters, params)
 
+    # Let's open a file to save the energy information at every step
+    energy_file = open("energy_aqs.txt", "a")
+
     step = 0
     # Main loop: apply shear until a plastic event is detected.
     while true
@@ -424,6 +427,11 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         apply_periodic!(positions, params)
         e_current = fire_minimization!(positions, diameters, gamma, params)
         e_current /= params.N
+
+        # Write and flush the file
+        println(energy_file, e_current)
+        flush(energy_file)
+
         println("Step $step: γ = $gamma, Energy per particle = $e_current")
         println("Stress tensor:")
         println(compute_stress_tensor(positions, diameters, gamma, params))
@@ -432,16 +440,20 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
             e_prev, e_current, params.dgamma, params.plastic_threshold
         )
             println("Plastic event detected at γ = $gamma (step $step)!")
-            println("Reversing strain direction.")
-            params.dgamma = -params.dgamma
+            # println("Reversing strain direction.")
+            # params.dgamma = -params.dgamma
             # Optionally, save the configuration at this reversal.
             save_configuration("plastic_event_γ=$(gamma).xyz", positions, diameters, params)
+            break
         end
         e_prev = e_current
     end
 
     # (Optional) At the end, save the final configuration.
     # save_configuration("final_configuration.xyz", positions, diameters, params)
+    close(energy_file)
+
+    return nothing
 end
 
 ###########################

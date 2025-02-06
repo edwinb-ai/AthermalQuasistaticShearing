@@ -102,6 +102,8 @@ function update_particle_cell!(
         push!(cell_list.cells[new_cell[1], new_cell[2]], i)
         particle_cells[i] = new_cell
     end
+
+    return nothing
 end
 
 # ============================
@@ -130,6 +132,7 @@ function pair_energy(p1::Particle, p2::Particle, L::Float64, r_cut::Float64)
         term_2 = c2 * (r / σ_eff)^2
         term_3 = c4 * (r / σ_eff)^4
         potential = term_1 + c0 + term_2 + term_3
+
         return potential
     end
 end
@@ -356,6 +359,8 @@ function write_snapshot_xyz(
             println(io, "A $(p.pos[1]) $(p.pos[2]) 0.0 $(p.sigma/2.0)")
         end
     end
+
+    return nothing
 end
 
 # ============================
@@ -379,7 +384,9 @@ function check_polidispersity(particles)
     mean_diameter = mean(all_sigmas)
     stdev_diameter = std(all_sigmas)
     polydispersity = stdev_diameter / mean_diameter
-    return println("Polydispersity in the system: $(polydispersity)")
+    println("Polydispersity in the system: $(polydispersity)")
+
+    return nothing
 end
 
 """
@@ -529,7 +536,9 @@ function main()
     particles, energies = run_simulation(
         N, L, beta, delta, p_swap, nsteps, r_cut; print_interval=1000
     )
-    return println("Final energy: ", energies[end])
+    println("Final energy: ", energies[end])
+
+    return nothing
 end
 
 main()
