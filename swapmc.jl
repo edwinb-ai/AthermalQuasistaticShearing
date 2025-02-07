@@ -437,7 +437,8 @@ function run_simulation(
     delta::Float64,
     p_swap::Float64,
     nsteps::Int,
-    r_cut::Float64;
+    r_cut::Float64,
+    dir_path::String;
     print_interval::Int=1000,
 )
     # Initialize particles on a square lattice to avoid overlaps.
@@ -445,7 +446,7 @@ function run_simulation(
     (x, y) = initialize_lattice(N, L)
     for i in 1:N
         pos = SVector(x[i], y[i])
-        sigma = inverse_diameters(; sigma_max=1.6251)
+        sigma = inverse_diameters(; sigma_max=1.62)
         push!(particles, Particle(pos, sigma))
     end
     check_polidispersity(particles)
@@ -467,7 +468,8 @@ function run_simulation(
     swap_accept = 0
 
     # (Optionally, clear the energy log file at the start.)
-    open("energy.txt", "w") do io
+    energy_file = joinpath(dir_path, "energy.txt")
+    open(energy_file, "w") do io
         println(io, "# step energy")
     end
 
@@ -499,11 +501,11 @@ function run_simulation(
                 "swap_acceptance = $(round(swap_ratio*100, digits=2))%, Δ = $(round(delta, digits=4))",
             )
             # Write energy to file.
-            open("energy.txt", "a") do io
+            open(energy_file, "a") do io
                 println(io, "$step $(energies[step])")
             end
             # Write a snapshot in extended XYZ format.
-            snapshot_filename = "snapshot_step_$(step).xyz"
+            snapshot_filename = joinpath(dir_path, "snapshot_step_$(step).xyz")
             write_snapshot_xyz(snapshot_filename, particles, step, L)
             # Adjust Δ to approach a target acceptance ratio (here 30% as an example).
             delta = adjust_delta(delta, disp_accept, disp_attempt; target=0.3)
@@ -522,19 +524,24 @@ end
 # ============================
 function main()
     # Simulation parameters.
-    N = 256
+    N = 1024
     density = 1.01
     L = sqrt(N / density)
     temperature = 0.12
     beta = 1.0 / temperature         # Inverse temperature (1/kT).
     delta = 0.2                      # Initial maximum displacement.
     p_swap = 0.2                     # Probability for a swap move.
-    nsteps = 500_000                 # Number of Monte Carlo steps.
+    nsteps = 5_000_000                 # Number of Monte Carlo steps.
     r_cut = 1.25                     # Base cutoff distance for the potential.
+
+    # Use some of the parameters to make a special directory to
+    # save the configurations
+    save_dir = "ktemp=$(temperature)_n=$(N)"
+    mkpath(save_dir)
 
     # Run the simulation.
     particles, energies = run_simulation(
-        N, L, beta, delta, p_swap, nsteps, r_cut; print_interval=1000
+        N, L, beta, delta, p_swap, nsteps, r_cut, save_dir; print_interval=10000
     )
     println("Final energy: ", energies[end])
 
