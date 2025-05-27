@@ -37,9 +37,9 @@ function default_params()
         1.1,       # f_inc
         0.5,       # f_dec
         0.1,       # alpha0
-        1e-5,      # dgamma (strain increment)
-        1e-5,      # fire_tol
-        1000000,    # fire_max_steps
+        -1e-5,      # dgamma (strain increment)
+        1e-4,      # fire_tol
+        10000000,    # fire_max_steps
         0.0,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,        # non_additivity
     )
@@ -401,7 +401,7 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     end
 
     # Initial energy minimization.
-    gamma = 0.0
+    gamma = 0.0002
     println("Performing initial energy minimization (γ = $gamma)...")
     e_prev = fire_minimization!(positions, diameters, gamma, params)
     e_prev /= params.N
@@ -459,4 +459,4 @@ end
 ###########################
 # Run the Simulation      #
 ###########################
-run_athermal_quasistatic("ktemp=0.12_n=256/snapshot_step_500000.xyz")
+run_athermal_quasistatic("plastic_event_γ=0.0002/plastic_event_γ=0.0002.xyz")
