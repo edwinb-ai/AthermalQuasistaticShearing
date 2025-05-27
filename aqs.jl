@@ -33,12 +33,12 @@ function default_params()
         10.0,      # Ly
         100,       # N (will be overwritten if configuration file is used)
         1.25,      # r_cut
-        0.01,      # dt_initial
+        0.005,      # dt_initial
         0.01,      # dt_max
         1.1,       # f_inc
         0.5,       # f_dec
         0.1,       # alpha0
-        1e-4,      # dgamma (strain increment)
+        1e-5,      # dgamma (strain increment)
         1e-5,      # fire_tol
         10000000,    # fire_max_steps
         -1e-6,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
@@ -299,7 +299,26 @@ function fire_minimization!(
 
     for step in 1:(params.fire_max_steps)
         forces, energy = compute_forces(positions, diameters, gamma, params)
+
+        # DEBUG: Check for NaN/Inf in forces
+        for (i, f) in enumerate(forces)
+            if !isfinite(f[1]) || !isfinite(f[2])
+                @error "Non-finite force detected at particle $i: $f"
+                @error "Position: $(positions[i])"
+                return energy  # Exit gracefully
+                exit(1)
+            end
+        end
+
         F_norm = sqrt(sum(norm(f)^2 for f in forces))
+
+        # DEBUG: Check F_norm
+        if !isfinite(F_norm)
+            @error "Non-finite F_norm detected: $F_norm"
+            @error "Individual force norms: $([norm(f) for f in forces])"
+            return energy
+        end
+
         if F_norm < params.fire_tol
             return energy
         end
@@ -403,8 +422,9 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     end
 
     # Define the parameters for shearing
-    gamma = 1e-4
+    params.dgamma = 1e-4
     gamma_max = 0.25
+    gamma = 0.0
     # Initial energy minimization.
     println("Performing initial energy minimization (γ = $gamma)...")
     e_prev = fire_minimization!(positions, diameters, gamma, params)
@@ -417,8 +437,8 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     save_configuration("initial_configuration.xyz", positions, diameters, params)
 
     # Let's open a file to save the energy information at every step
-    energy_file = open("energy_aqs.txt", "a")
-    stress_file = open("stress_aqs.txt", "a")
+    energy_file = open("energy_aqs.txt", "w")
+    stress_file = open("stress_aqs.txt", "w")
 
     step = 0
     # Main loop: apply shear until a plastic event is detected.
