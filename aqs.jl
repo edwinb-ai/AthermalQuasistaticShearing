@@ -35,11 +35,11 @@ function default_params()
         1.25,      # r_cut
         0.005,      # dt_initial
         0.01,      # dt_max
-        1.1,       # f_inc
+        1.05,       # f_inc
         0.5,       # f_dec
         0.1,       # alpha0
         1e-5,      # dgamma (strain increment)
-        1e-5,      # fire_tol
+        1e-8,      # fire_tol
         10000000,    # fire_max_steps
         -1e-6,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,        # non_additivity
@@ -52,8 +52,8 @@ end
 # The file is expected to have the following format:
 #
 #   <N_particles>
-#   Lattice="Lx 0 0 Lx" Properties=...
-#   <species> <x> <y> <radius>
+#   Lattice="Lx 0 0 0 Ly 0 0 0 Lz" Properties=...
+#   <species> <id> <radius> <x> <y>
 #   ...
 #
 # (For a 2D simulation only x and y are used.)
@@ -103,10 +103,20 @@ end
 #################################
 # Utility: Periodic Wrapping    #
 #################################
-@inline function apply_periodic!(positions::Vector{Vec2}, params::SimulationParams)
+@inline function apply_periodic!(
+    positions::Vector{Vec2}, gamma::Float64, params::SimulationParams
+)
     @inbounds for pos in positions
-        pos[1] = pos[1] - round(pos[1] / params.Lx) * params.Lx
-        pos[2] = pos[2] - round(pos[2] / params.Ly) * params.Ly
+        # 1) wrap in y, record how many boxes we moved
+        n_y = floor(Int, pos[2] / params.Ly)
+        pos[2] -= n_y * params.Ly
+
+        # 2) apply the shear‐offset for that crossing
+        pos[1] -= n_y * gamma * params.Lx
+
+        # 3) now wrap x normally
+        n_x = floor(Int, pos[1] / params.Lx)
+        pos[1] -= n_x * params.Lx
     end
 end
 
@@ -164,8 +174,8 @@ end
 # Cell List Construction      #
 ###############################
 function build_cell_list(positions::Vector{Vec2}, params::SimulationParams)
-    n_cells_x = max(Int(fld(params.Lx, 1.6)), 1)
-    n_cells_y = max(Int(fld(params.Ly, 1.6)), 1)
+    n_cells_x = max(Int(fld(params.Lx, 1.4)), 1)
+    n_cells_y = max(Int(fld(params.Ly, 1.4)), 1)
     cell_size_x = params.Lx / n_cells_x
     cell_size_y = params.Ly / n_cells_y
     cell_list = [Int[] for i in 1:n_cells_x, j in 1:n_cells_y]
@@ -312,6 +322,10 @@ function fire_minimization!(
 
         F_norm = sqrt(sum(norm(f)^2 for f in forces))
 
+        if mod(step, 100) == 0
+            @info "Step $step: F_norm = $F_norm"
+        end
+
         # DEBUG: Check F_norm
         if !isfinite(F_norm)
             @error "Non-finite F_norm detected: $F_norm"
@@ -365,7 +379,7 @@ function fire_minimization!(
         for i in 1:Np
             positions[i] += dt * v[i]
         end
-        apply_periodic!(positions, params)
+        apply_periodic!(positions, gamma, params)
     end
 
     forces, energy = compute_forces(positions, diameters, gamma, params)
@@ -449,7 +463,7 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
             pos[1] += params.dgamma * pos[2]
         end
         gamma += params.dgamma
-        apply_periodic!(positions, params)
+        apply_periodic!(positions, gamma, params)
         e_current = fire_minimization!(positions, diameters, gamma, params)
         e_current /= params.N
 
@@ -487,4 +501,4 @@ end
 ###########################
 # Run the Simulation      #
 ###########################
-run_athermal_quasistatic("poly_longer_2D_N=1200_density=1/final.xyz")
+run_athermal_quasistatic("initial_configuration.xyz")
