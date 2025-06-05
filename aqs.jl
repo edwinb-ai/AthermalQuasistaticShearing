@@ -2,6 +2,7 @@ using LinearAlgebra
 using Random
 using StaticArrays
 using DelimitedFiles
+using Printf: @sprintf
 
 # For convenience, define a 2D mutable vector alias.
 const Vec2 = MVector{2,Float64}
@@ -33,9 +34,9 @@ function default_params()
         10.0,      # Ly
         100,       # N (will be overwritten if configuration file is used)
         1.25,      # r_cut
-        0.005,      # dt_initial
+        0.01,      # dt_initial
         0.01,      # dt_max
-        1.05,       # f_inc
+        1.02,       # f_inc
         0.5,       # f_dec
         0.1,       # alpha0
         1e-5,      # dgamma (strain increment)
@@ -173,9 +174,14 @@ end
 ###############################
 # Cell List Construction      #
 ###############################
-function build_cell_list(positions::Vector{Vec2}, params::SimulationParams)
-    n_cells_x = max(Int(fld(params.Lx, 1.4)), 1)
-    n_cells_y = max(Int(fld(params.Ly, 1.4)), 1)
+function build_cell_list(
+    positions::Vector{Vec2}, params::SimulationParams, max_diameter::Float64
+)
+    # A safe upper bound on σ_eff is (max_diameter) * (1 - δ |diff|),
+    # but if you want to be conservative, just use max_diameter.
+    max_r_cut_dist = params.r_cut * max_diameter
+    n_cells_x = max(Int(floor(params.Lx / max_r_cut_dist)), 1)
+    n_cells_y = max(Int(floor(params.Ly / max_r_cut_dist)), 1)
     cell_size_x = params.Lx / n_cells_x
     cell_size_y = params.Ly / n_cells_y
     cell_list = [Int[] for i in 1:n_cells_x, j in 1:n_cells_y]
@@ -199,7 +205,9 @@ function compute_forces(
     Np = length(positions)
     forces = [Vec2(0.0, 0.0) for _ in 1:Np]
     energy = 0.0
-    cell_list, n_cells_x, n_cells_y, _, _ = build_cell_list(positions, params)
+    cell_list, n_cells_x, n_cells_y, _, _ = build_cell_list(
+        positions, params, maximum(diameters)
+    )
     for cx in 1:n_cells_x
         for cy in 1:n_cells_y
             cell_particles = cell_list[cx, cy]
@@ -245,7 +253,9 @@ function compute_stress_tensor(
 )
     V = params.Lx * params.Ly
     stress = zeros(2, 2)
-    cell_list, n_cells_x, n_cells_y, _, _ = build_cell_list(positions, params)
+    cell_list, n_cells_x, n_cells_y, _, _ = build_cell_list(
+        positions, params, maximum(diameters)
+    )
     for cx in 1:n_cells_x
         for cy in 1:n_cells_y
             cell_particles = cell_list[cx, cy]
@@ -437,7 +447,7 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
 
     # Define the parameters for shearing
     params.dgamma = 1e-4
-    gamma_max = 0.25
+    gamma_max = 0.2
     gamma = 0.0
     # Initial energy minimization.
     println("Performing initial energy minimization (γ = $gamma)...")
@@ -488,6 +498,8 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         #     break
         # end
         e_prev = e_current
+
+        save_configuration(@sprintf("conf_%.4g.xyz", gamma), positions, diameters, params)
     end
 
     # (Optional) At the end, save the final configuration.
@@ -501,4 +513,4 @@ end
 ###########################
 # Run the Simulation      #
 ###########################
-run_athermal_quasistatic("initial_configuration.xyz")
+run_athermal_quasistatic("poly_longer_2D_N=1200_density=1/final.xyz")
