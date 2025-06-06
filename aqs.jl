@@ -40,8 +40,8 @@ function default_params()
         0.5,       # f_dec
         0.1,       # alpha0
         1e-5,      # dgamma (strain increment)
-        1e-8,      # fire_tol
-        10000000,    # fire_max_steps
+        1e-6,      # fire_tol
+        100000,    # fire_max_steps
         -1e-6,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,        # non_additivity
     )
@@ -316,35 +316,17 @@ function fire_minimization!(
     no_progress_limit = 50
     no_progress_counter = 0
     best_F_norm = Inf
+    # Use a variable to check convergence
+    convergence = false
 
-    for step in 1:(params.fire_max_steps)
+    for _ in 1:(params.fire_max_steps)
         forces, energy = compute_forces(positions, diameters, gamma, params)
-
-        # DEBUG: Check for NaN/Inf in forces
-        for (i, f) in enumerate(forces)
-            if !isfinite(f[1]) || !isfinite(f[2])
-                @error "Non-finite force detected at particle $i: $f"
-                @error "Position: $(positions[i])"
-                return energy  # Exit gracefully
-                exit(1)
-            end
-        end
 
         F_norm = sqrt(sum(norm(f)^2 for f in forces))
 
-        if mod(step, 100) == 0
-            @info "Step $step: F_norm = $F_norm"
-        end
-
-        # DEBUG: Check F_norm
-        if !isfinite(F_norm)
-            @error "Non-finite F_norm detected: $F_norm"
-            @error "Individual force norms: $([norm(f) for f in forces])"
-            return energy
-        end
-
         if F_norm < params.fire_tol
-            return energy
+            convergence = true
+            return energy, convergence
         end
 
         if F_norm < best_F_norm * 0.99
@@ -394,8 +376,10 @@ function fire_minimization!(
 
     forces, energy = compute_forces(positions, diameters, gamma, params)
     F_norm = sqrt(sum(norm(f)^2 for f in forces))
+
     @warn "FIRE did not converge after $(params.fire_max_steps) steps; final F_norm = $(F_norm)"
-    return energy
+
+    return energy, convergence
 end
 
 ##############################################
@@ -448,10 +432,17 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     # Define the parameters for shearing
     params.dgamma = 1e-4
     gamma_max = 0.2
+    gamma_min = 1e-8
     gamma = 0.0
     # Initial energy minimization.
     println("Performing initial energy minimization (γ = $gamma)...")
-    e_prev = fire_minimization!(positions, diameters, gamma, params)
+    (e_prev, convergence) = fire_minimization!(positions, diameters, gamma, params)
+    # Check if FIRE converged
+    if !convergence
+        @error "Initial energy minimization did not converge!"
+        return nothing
+    end
+    # Normalize the energy per particle.
     e_prev /= params.N
     println("γ = $gamma, Energy per particle = $e_prev")
     println("Initial Stress tensor:")
@@ -474,7 +465,21 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         end
         gamma += params.dgamma
         apply_periodic!(positions, gamma, params)
-        e_current = fire_minimization!(positions, diameters, gamma, params)
+        (e_current, convergence) = fire_minimization!(positions, diameters, gamma, params)
+        # Check if FIRE converged
+        if !convergence
+            @error "FIRE did not converge at γ = $gamma!"
+            @info "Halving the strain increment and retrying..."
+            if params.dgamma < gamma_min
+                @error "Strain increment too small; stopping simulation."
+                exit(1)
+            end
+            params.dgamma /= 2.0
+            gamma -= params.dgamma  # Roll back the gamma increment
+            step -= 1  # Roll back the step count
+            continue
+        end
+        # Normalize the energy per particle.
         e_current /= params.N
 
         # Write and flush the file
@@ -513,4 +518,4 @@ end
 ###########################
 # Run the Simulation      #
 ###########################
-run_athermal_quasistatic("poly_longer_2D_N=1200_density=1/final.xyz")
+run_athermal_quasistatic("initial_poly.xyz")
