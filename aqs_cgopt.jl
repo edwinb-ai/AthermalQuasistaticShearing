@@ -3,6 +3,8 @@ using Random
 using StaticArrays
 using DelimitedFiles
 using Printf: @sprintf
+using CellListMap
+import CellListMap: copy_output, reset_output!, reducer
 
 # For convenience, define a 2D mutable vector alias.
 const Vec2 = MVector{2,Float64}
@@ -45,6 +47,88 @@ function default_params()
         -1e-6,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,        # non_additivity
     )
+end
+
+##########################################
+# Pairwise Potential and Force Functions #
+##########################################
+function pair_potential_energy(
+    r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams
+)
+    σ_eff = 0.5 * (sigma_i + sigma_j)
+    σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
+    if r < params.r_cut * σ_eff
+        term_1 = (σ_eff / r)^12
+        c0 = -28.0 / (params.r_cut^12)
+        c2 = 48.0 / (params.r_cut^14)
+        c4 = -21.0 / (params.r_cut^16)
+        term_2 = c2 * (r / σ_eff)^2
+        term_3 = c4 * (r / σ_eff)^4
+        return term_1 + c0 + term_2 + term_3
+    else
+        return 0.0
+    end
+end
+
+function pair_force(
+    r_vec::Vec2, r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams
+)
+    σ_eff = 0.5 * (sigma_i + sigma_j)
+    σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
+    if r < params.r_cut * σ_eff
+        c2 = 48.0 / (params.r_cut^14)
+        c4 = -21.0 / (params.r_cut^16)
+        force_mag =
+            12.0 * σ_eff^12 / r^13 - 2.0 * c2 * r / (σ_eff^2) - 4.0 * c4 * r^3 / (σ_eff^4)
+        return (force_mag * r_vec) / r
+    else
+        return Vec2(0.0, 0.0)
+    end
+end
+
+###############################################
+# Cell lists implementation, from CellListMap #
+###############################################
+
+# Define custom type
+mutable struct EnergyAndForces
+    energy::Float64
+    forces::Vector{SVector{2,Float64}}
+end
+
+# Custom copy, reset and reducer functions
+function copy_output(x::EnergyAndForces)
+    return EnergyAndForces(copy(x.energy), copy(x.forces))
+end
+
+function reset_output!(output::EnergyAndForces)
+    output.energy = 0.0
+
+    for i in eachindex(output.forces)
+        output.forces[i] = SVector(0.0, 0.0)
+    end
+
+    return output
+end
+
+function reducer(x::EnergyAndForces, y::EnergyAndForces)
+    e_tot = x.energy + y.energy
+    x.forces .+= y.forces
+
+    return EnergyAndForces(e_tot, x.forces)
+end
+
+# Function that updates energy and forces for each pair
+function energy_and_forces!(x, y, i, j, d2, diameters, params, output::EnergyAndForces)
+    d = sqrt(d2)
+    output.energy += pair_potential_energy(d, diameters[i], diameters[j], params)
+    r = x - y
+    force = pair_force(r, d, diameters[i], diameters[j], params)
+    sumies = @. force * r / d
+    output.forces[i] = @. output.forces[i] + sumies
+    output.forces[j] = @. output.forces[j] - sumies
+
+    return output
 end
 
 #############################################
@@ -132,43 +216,6 @@ function minimum_image(pos_i::Vec2, pos_j::Vec2, gamma::Float64, params::Simulat
     dx -= gamma * params.Lx * n_y
     dx -= params.Lx * round(dx / params.Lx)
     return Vec2(dx, dy)
-end
-
-##########################################
-# Pairwise Potential and Force Functions #
-##########################################
-function pair_potential_energy(
-    r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams
-)
-    σ_eff = 0.5 * (sigma_i + sigma_j)
-    σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
-    if r < params.r_cut * σ_eff
-        term_1 = (σ_eff / r)^12
-        c0 = -28.0 / (params.r_cut^12)
-        c2 = 48.0 / (params.r_cut^14)
-        c4 = -21.0 / (params.r_cut^16)
-        term_2 = c2 * (r / σ_eff)^2
-        term_3 = c4 * (r / σ_eff)^4
-        return term_1 + c0 + term_2 + term_3
-    else
-        return 0.0
-    end
-end
-
-function pair_force(
-    r_vec::Vec2, r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams
-)
-    σ_eff = 0.5 * (sigma_i + sigma_j)
-    σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
-    if r < params.r_cut * σ_eff
-        c2 = 48.0 / (params.r_cut^14)
-        c4 = -21.0 / (params.r_cut^16)
-        force_mag =
-            12.0 * σ_eff^12 / r^13 - 2.0 * c2 * r / (σ_eff^2) - 4.0 * c4 * r^3 / (σ_eff^4)
-        return (force_mag * r_vec) / r
-    else
-        return Vec2(0.0, 0.0)
-    end
 end
 
 ##########################################
