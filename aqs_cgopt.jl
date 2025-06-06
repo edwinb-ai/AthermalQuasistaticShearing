@@ -93,7 +93,7 @@ end
 # Define custom type
 mutable struct EnergyAndForces
     energy::Float64
-    forces::Vector{SVector{2,Float64}}
+    forces::Vector{Vec2}
 end
 
 # Custom copy, reset and reducer functions
@@ -105,7 +105,7 @@ function reset_output!(output::EnergyAndForces)
     output.energy = 0.0
 
     for i in eachindex(output.forces)
-        output.forces[i] = SVector(0.0, 0.0)
+        output.forces[i] = Vec2(0.0, 0.0)
     end
 
     return output
@@ -122,11 +122,11 @@ end
 function energy_and_forces!(x, y, i, j, d2, diameters, params, output::EnergyAndForces)
     d = sqrt(d2)
     output.energy += pair_potential_energy(d, diameters[i], diameters[j], params)
-    r = x - y
+    r = Vec2(x - y)
     force = pair_force(r, d, diameters[i], diameters[j], params)
     sumies = @. force * r / d
-    output.forces[i] = @. output.forces[i] + sumies
-    output.forces[j] = @. output.forces[j] - sumies
+    @. output.forces[i] += sumies
+    @. output.forces[j] -= sumies
 
     return output
 end
@@ -219,55 +219,6 @@ function minimum_image(pos_i::Vec2, pos_j::Vec2, gamma::Float64, params::Simulat
 end
 
 ##########################################
-# Compute Forces and Total Energy        #
-##########################################
-function compute_forces(
-    positions::Vector{Vec2},
-    diameters::Vector{Float64},
-    gamma::Float64,
-    params::SimulationParams,
-)
-    Np = length(positions)
-    forces = [Vec2(0.0, 0.0) for _ in 1:Np]
-    energy = 0.0
-    cell_list, n_cells_x, n_cells_y, _, _ = build_cell_list(
-        positions, params, maximum(diameters)
-    )
-    for cx in 1:n_cells_x
-        for cy in 1:n_cells_y
-            cell_particles = cell_list[cx, cy]
-            for i_idx in eachindex(cell_particles)
-                i = cell_particles[i_idx]
-                for dx in -1:1
-                    for dy in -1:1
-                        ncx = mod(cx - 1 + dx, n_cells_x) + 1
-                        ncy = mod(cy - 1 + dy, n_cells_y) + 1
-                        for j in cell_list[ncx, ncy]
-                            if (ncx == cx && ncy == cy && j <= i)
-                                continue
-                            end
-                            disp = minimum_image(positions[i], positions[j], gamma, params)
-                            r = norm(disp)
-                            sigma_i = diameters[i]
-                            sigma_j = diameters[j]
-                            σ_eff = 0.5 * (sigma_i + sigma_j)
-                            σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
-                            if r < params.r_cut * σ_eff
-                                energy += pair_potential_energy(r, sigma_i, sigma_j, params)
-                                fpair = pair_force(disp, r, sigma_i, sigma_j, params)
-                                forces[i] += fpair
-                                forces[j] -= fpair
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return forces, energy
-end
-
-##########################################
 # Compute Stress Tensor                  #
 ##########################################
 function compute_stress_tensor(
@@ -324,89 +275,6 @@ function plastic_event_detected(
     return dE_dgamma < threshold
 end
 
-##########################################
-# FIRE Energy Minimization Algorithm     #
-##########################################
-function fire_minimization!(
-    positions::Vector{Vec2},
-    diameters::Vector{Float64},
-    gamma::Float64,
-    params::SimulationParams,
-)
-    Np = length(positions)
-    v = [Vec2(0.0, 0.0) for _ in 1:Np]
-    dt = params.dt_initial
-    α = params.alpha0
-
-    no_progress_limit = 50
-    no_progress_counter = 0
-    best_F_norm = Inf
-    # Use a variable to check convergence
-    convergence = false
-
-    for _ in 1:(params.fire_max_steps)
-        forces, energy = compute_forces(positions, diameters, gamma, params)
-
-        F_norm = sqrt(sum(norm(f)^2 for f in forces))
-
-        if F_norm < params.fire_tol
-            convergence = true
-            return energy, convergence
-        end
-
-        if F_norm < best_F_norm * 0.99
-            best_F_norm = F_norm
-            no_progress_counter = 0
-        else
-            no_progress_counter += 1
-        end
-
-        if no_progress_counter >= no_progress_limit
-            for i in 1:Np
-                v[i] = Vec2(0.0, 0.0)
-            end
-            dt = params.dt_initial
-            no_progress_counter = 0
-        end
-
-        for i in 1:Np
-            v[i] += dt * forces[i]
-        end
-
-        P = sum(dot(v[i], forces[i]) for i in 1:Np)
-
-        if P > 0
-            v_norm = sqrt(sum(norm(v[i])^2 for i in 1:Np))
-            f_norm = sqrt(sum(norm(forces[i])^2 for i in 1:Np))
-            if v_norm > 0 && f_norm > 0
-                for i in 1:Np
-                    v[i] = (1 - α) * v[i] + α * (v_norm / f_norm) * forces[i]
-                end
-            end
-            dt = min(dt * params.f_inc, params.dt_max)
-            α *= 0.99
-        else
-            dt *= params.f_dec
-            for i in 1:Np
-                v[i] = Vec2(0.0, 0.0)
-            end
-            α = params.alpha0
-        end
-
-        for i in 1:Np
-            positions[i] += dt * v[i]
-        end
-        apply_periodic!(positions, gamma, params)
-    end
-
-    forces, energy = compute_forces(positions, diameters, gamma, params)
-    F_norm = sqrt(sum(norm(f)^2 for f in forces))
-
-    @warn "FIRE did not converge after $(params.fire_max_steps) steps; final F_norm = $(F_norm)"
-
-    return energy, convergence
-end
-
 ##############################################
 # Configuration Saving Function
 ##############################################
@@ -432,9 +300,35 @@ function save_configuration(
 end
 
 ##############################################
+# Optimization interfaces
+##############################################
+
+function energy_function(system)
+    return nothing
+end
+
+##############################################
+# System creation and cell list initialization
+##############################################
+
+function make_system(positions, diameters, params)
+    max_diameter = maximum(diameters)
+    max_r_cut_dist = params.r_cut * max_diameter
+    system = ParticleSystem(;
+        xpositions=positions,
+        unitcell=[params.Lx, params.Ly],
+        cutoff=max_r_cut_dist,
+        output=EnergyAndForces(0.0, similar(positions)),
+        output_name=:energy_and_forces,
+        parallel=false,
+    )
+    return system
+end
+
+##############################################
 # Main Simulation: Athermal Quasistatic Shear #
 ##############################################
-function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
+function run_athermal_quasistatic(filename=nothing)
     params = default_params()
     positions = Vector{Vec2}()
     diameters = Vector{Float64}()
@@ -459,83 +353,94 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     gamma_max = 0.2
     gamma_min = 1e-8
     gamma = 0.0
+
+    # Create the system of particles
+    system = make_system(positions, diameters, params)
+    reset_output!(system.energy_and_forces)
+    apply_periodic!(system.xpositions, gamma, params)
+    map_pairwise!(
+        (x, y, i, j, d2, output) ->
+            energy_and_forces!(x, y, i, j, d2, diameters, params, output),
+        system,
+    )
+
     # Initial energy minimization.
-    println("Performing initial energy minimization (γ = $gamma)...")
-    (e_prev, convergence) = fire_minimization!(positions, diameters, gamma, params)
-    # Check if FIRE converged
-    if !convergence
-        @error "Initial energy minimization did not converge!"
-        return nothing
-    end
-    # Normalize the energy per particle.
-    e_prev /= params.N
-    println("γ = $gamma, Energy per particle = $e_prev")
-    println("Initial Stress tensor:")
-    println(compute_stress_tensor(positions, diameters, gamma, params))
+    # println("Performing initial energy minimization (γ = $gamma)...")
+    # (e_prev, convergence) = fire_minimization!(positions, diameters, gamma, params)
+    # # Check if FIRE converged
+    # if !convergence
+    #     @error "Initial energy minimization did not converge!"
+    #     return nothing
+    # end
+    # # Normalize the energy per particle.
+    # e_prev /= params.N
+    # println("γ = $gamma, Energy per particle = $e_prev")
+    # println("Initial Stress tensor:")
+    # println(compute_stress_tensor(positions, diameters, gamma, params))
 
-    # Save the initial configuration.
-    save_configuration("initial_configuration.xyz", positions, diameters, params)
+    # # Save the initial configuration.
+    # save_configuration("initial_configuration.xyz", positions, diameters, params)
 
-    # Let's open a file to save the energy information at every step
-    energy_file = open("energy_aqs.txt", "w")
-    stress_file = open("stress_aqs.txt", "w")
+    # # Let's open a file to save the energy information at every step
+    # energy_file = open("energy_aqs.txt", "w")
+    # stress_file = open("stress_aqs.txt", "w")
 
-    step = 0
-    # Main loop: apply shear until a plastic event is detected.
-    while gamma < gamma_max
-        step += 1
-        # Apply affine shear: x' = x + dγ * y.
-        for pos in positions
-            pos[1] += params.dgamma * pos[2]
-        end
-        gamma += params.dgamma
-        apply_periodic!(positions, gamma, params)
-        (e_current, convergence) = fire_minimization!(positions, diameters, gamma, params)
-        # Check if FIRE converged
-        if !convergence
-            @error "FIRE did not converge at γ = $gamma!"
-            @info "Halving the strain increment and retrying..."
-            if params.dgamma < gamma_min
-                @error "Strain increment too small; stopping simulation."
-                exit(1)
-            end
-            params.dgamma /= 2.0
-            gamma -= params.dgamma  # Roll back the gamma increment
-            step -= 1  # Roll back the step count
-            continue
-        end
-        # Normalize the energy per particle.
-        e_current /= params.N
+    # step = 0
+    # # Main loop: apply shear until a plastic event is detected.
+    # while gamma < gamma_max
+    #     step += 1
+    #     # Apply affine shear: x' = x + dγ * y.
+    #     for pos in positions
+    #         pos[1] += params.dgamma * pos[2]
+    #     end
+    #     gamma += params.dgamma
+    #     apply_periodic!(positions, gamma, params)
+    #     (e_current, convergence) = fire_minimization!(positions, diameters, gamma, params)
+    #     # Check if FIRE converged
+    #     if !convergence
+    #         @error "FIRE did not converge at γ = $gamma!"
+    #         @info "Halving the strain increment and retrying..."
+    #         if params.dgamma < gamma_min
+    #             @error "Strain increment too small; stopping simulation."
+    #             exit(1)
+    #         end
+    #         params.dgamma /= 2.0
+    #         gamma -= params.dgamma  # Roll back the gamma increment
+    #         step -= 1  # Roll back the step count
+    #         continue
+    #     end
+    #     # Normalize the energy per particle.
+    #     e_current /= params.N
 
-        # Write and flush the file
-        println(energy_file, e_current)
-        flush(energy_file)
+    #     # Write and flush the file
+    #     println(energy_file, e_current)
+    #     flush(energy_file)
 
-        println("Step $step: γ = $gamma, Energy per particle = $e_current")
-        # Write the xy component of the stress tensor to file
-        stress_value = compute_stress_tensor(positions, diameters, gamma, params)
-        writedlm(stress_file, [gamma stress_value[1, 2]])
-        flush(stress_file)
+    #     println("Step $step: γ = $gamma, Energy per particle = $e_current")
+    #     # Write the xy component of the stress tensor to file
+    #     stress_value = compute_stress_tensor(positions, diameters, gamma, params)
+    #     writedlm(stress_file, [gamma stress_value[1, 2]])
+    #     flush(stress_file)
 
-        # if plastic_event_detected(
-        #     e_prev, e_current, params.dgamma, params.plastic_threshold
-        # )
-        #     println("Plastic event detected at γ = $gamma (step $step)!")
-        #     # println("Reversing strain direction.")
-        #     # params.dgamma = -params.dgamma
-        #     # Optionally, save the configuration at this reversal.
-        #     save_configuration("plastic_event_γ=$(gamma).xyz", positions, diameters, params)
-        #     break
-        # end
-        e_prev = e_current
+    #     # if plastic_event_detected(
+    #     #     e_prev, e_current, params.dgamma, params.plastic_threshold
+    #     # )
+    #     #     println("Plastic event detected at γ = $gamma (step $step)!")
+    #     #     # println("Reversing strain direction.")
+    #     #     # params.dgamma = -params.dgamma
+    #     #     # Optionally, save the configuration at this reversal.
+    #     #     save_configuration("plastic_event_γ=$(gamma).xyz", positions, diameters, params)
+    #     #     break
+    #     # end
+    #     e_prev = e_current
 
-        save_configuration(@sprintf("conf_%.4g.xyz", gamma), positions, diameters, params)
-    end
+    #     save_configuration(@sprintf("conf_%.4g.xyz", gamma), positions, diameters, params)
+    # end
 
-    # (Optional) At the end, save the final configuration.
-    # save_configuration("final_configuration.xyz", positions, diameters, params)
-    close(energy_file)
-    close(stress_file)
+    # # (Optional) At the end, save the final configuration.
+    # # save_configuration("final_configuration.xyz", positions, diameters, params)
+    # close(energy_file)
+    # close(stress_file)
 
     return nothing
 end
