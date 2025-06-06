@@ -5,6 +5,8 @@ using DelimitedFiles
 using Printf: @sprintf
 using CellListMap
 import CellListMap: copy_output, reset_output!, reducer
+using Optimization
+using OptimizationOptimJL
 
 # For convenience, define a 2D mutable vector alias.
 const Vec2 = MVector{2,Float64}
@@ -303,8 +305,73 @@ end
 # Optimization interfaces
 ##############################################
 
-function energy_function(system)
-    return nothing
+function flatten_positions(positions::Vector{<:StaticVector})
+    result = Float64[]
+    for pos in positions
+        for component in pos
+            push!(result, component)
+        end
+    end
+    return result
+end
+
+function unflatten_positions(flat_pos::Vector{Float64}, n_particles::Int, dim::Int)
+    positions = Vector{MVector{dim,Float64}}(undef, n_particles)
+    idx = 1
+    for i in 1:n_particles
+        positions[i] = MVector{dim,Float64}(flat_pos[idx:(idx + dim - 1)])
+        idx += dim
+    end
+    return positions
+end
+
+function energy_function_flat(system, diameters, gamma, params, n_particles, dim)
+    function energy_scalar(flat_positions, p)
+        # Convert flat array back to MVector format
+        positions = unflatten_positions(flat_positions, n_particles, dim)
+
+        reset_output!(system.energy_and_forces)
+        system.xpositions .= positions
+        apply_periodic!(system.xpositions, gamma, params)
+
+        map_pairwise!(
+            (x, y, i, j, d2, output) ->
+                energy_and_forces!(x, y, i, j, d2, diameters, params, output),
+            system,
+        )
+
+        return system.energy_and_forces.energy
+    end
+    return energy_scalar
+end
+
+# Modified gradient function for flattened positions
+function gradient_function_flat(system, diameters, gamma, params, n_particles, dim)
+    function gradient_forces(grad, flat_positions, p)
+        positions = unflatten_positions(flat_positions, n_particles, dim)
+
+        reset_output!(system.energy_and_forces)
+        system.xpositions .= positions
+        apply_periodic!(system.xpositions, gamma, params)
+
+        map_pairwise!(
+            (x, y, i, j, d2, output) ->
+                energy_and_forces!(x, y, i, j, d2, diameters, params, output),
+            system,
+        )
+
+        # Flatten forces into gradient array
+        idx = 1
+        for force_vec in system.energy_and_forces.forces
+            for component in force_vec
+                grad[idx] = -component
+                idx += 1
+            end
+        end
+
+        return nothing
+    end
+    return gradient_forces
 end
 
 ##############################################
@@ -364,9 +431,25 @@ function run_athermal_quasistatic(filename=nothing)
         system,
     )
 
+    # Define the optimization problem
+    initial_positions = deepcopy(system.xpositions)
+    flat_initial_positions = flatten_positions(initial_positions)
+    n_particles = length(initial_positions)
+    dim = length(initial_positions[1])
+
+    energy_func_flat = energy_function_flat(
+        system, diameters, gamma, params, n_particles, dim
+    )
+    grad_func_flat = gradient_function_flat(
+        system, diameters, gamma, params, n_particles, dim
+    )
+    optf_flat = OptimizationFunction(energy_func_flat; grad=grad_func_flat)
+    prob_flat = OptimizationProblem(optf_flat, flat_initial_positions, nothing)
+
     # Initial energy minimization.
-    # println("Performing initial energy minimization (γ = $gamma)...")
-    # (e_prev, convergence) = fire_minimization!(positions, diameters, gamma, params)
+    println("Performing initial energy minimization (γ = $gamma)...")
+    sol_flat = solve(prob_flat, OptimizationOptimJL.ConjugateGradient(); maxtime=60.0)
+    println(sol_flat.original)
     # # Check if FIRE converged
     # if !convergence
     #     @error "Initial energy minimization did not converge!"
