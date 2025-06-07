@@ -25,25 +25,35 @@ mutable struct SimulationParams
     fire_max_steps::Int   # Maximum FIRE iterations per shear step
     plastic_threshold::Float64  # Threshold for (ΔE/Δγ) to detect a plastic event
     non_additivity::Float64     # Non-additivity parameter for the effective diameter
+    c0::Float64
+    c2::Float64
+    c4::Float64
 end
 
 # Default parameters.
 function default_params()
+    default_r_cut = 1.25
+    c0 = -28.0 / default_r_cut^12
+    c2 = 48.0 / default_r_cut^14
+    c4 = -21.0 / default_r_cut^16
     return SimulationParams(
         10.0,      # Lx (will be overwritten if configuration file is used)
         10.0,      # Ly
         100,       # N (will be overwritten if configuration file is used)
-        1.25,      # r_cut
+        default_r_cut,      # r_cut
         0.01,      # dt_initial
-        0.01,      # dt_max
-        1.02,       # f_inc
+        0.05,      # dt_max
+        1.1,       # f_inc
         0.5,       # f_dec
         0.1,       # alpha0
-        1e-5,      # dgamma (strain increment)
+        1e-4,      # dgamma (strain increment)
         1e-6,      # fire_tol
-        100000,    # fire_max_steps
+        1000000,    # fire_max_steps
         -1e-6,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,        # non_additivity
+        c0,
+        c2,
+        c4,
     )
 end
 
@@ -104,67 +114,49 @@ end
 #################################
 # Utility: Periodic Wrapping    #
 #################################
-@inline function apply_periodic!(
-    positions::Vector{Vec2}, gamma::Float64, params::SimulationParams
-)
+@inline function apply_periodic!(positions::Vector{Vec2}, γ::Float64, p::SimulationParams)
     @inbounds for pos in positions
-        # 1) wrap in y, record how many boxes we moved
-        n_y = floor(Int, pos[2] / params.Ly)
-        pos[2] -= n_y * params.Ly
-
-        # 2) apply the shear‐offset for that crossing
-        pos[1] -= n_y * gamma * params.Lx
-
-        # 3) now wrap x normally
-        n_x = floor(Int, pos[1] / params.Lx)
-        pos[1] -= n_x * params.Lx
+        n_y = floor(Int, pos[2] / p.Ly)
+        pos[2] -= n_y * p.Ly
+        pos[1] -= n_y * γ * p.Ly
+        n_x = floor(Int, pos[1] / p.Lx)
+        pos[1] -= n_x * p.Lx
     end
 end
 
 ############################################################
 # Lees–Edwards Minimum Image Convention for Sheared Systems  #
 ############################################################
-function minimum_image(pos_i::Vec2, pos_j::Vec2, gamma::Float64, params::SimulationParams)
-    dx = pos_i[1] - pos_j[1]
-    dy = pos_i[2] - pos_j[2]
-    n_y = round(Int, dy / params.Ly)
-    dy -= n_y * params.Ly
-    dx -= gamma * params.Lx * n_y
-    dx -= params.Lx * round(dx / params.Lx)
+@inline function minimum_image(pi::Vec2, pj::Vec2, γ::Float64, p::SimulationParams)
+    dx = pi[1] - pj[1]
+    dy = pi[2] - pj[2]
+    # safer integer for dy: round ≈ floor(x+0.5)
+    n_y = floor(Int, dy / p.Ly + 0.5)
+    dy -= n_y * p.Ly
+    dx -= γ * p.Ly * n_y
+    dx -= p.Lx * floor(dx / p.Lx + 0.5)
     return Vec2(dx, dy)
 end
 
 ##########################################
 # Pairwise Potential and Force Functions #
 ##########################################
-function pair_potential_energy(
-    r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams
-)
-    σ_eff = 0.5 * (sigma_i + sigma_j)
-    σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
+function pair_potential_energy(r::Float64, σ_eff::Float64, params::SimulationParams)
     if r < params.r_cut * σ_eff
         term_1 = (σ_eff / r)^12
-        c0 = -28.0 / (params.r_cut^12)
-        c2 = 48.0 / (params.r_cut^14)
-        c4 = -21.0 / (params.r_cut^16)
-        term_2 = c2 * (r / σ_eff)^2
-        term_3 = c4 * (r / σ_eff)^4
-        return term_1 + c0 + term_2 + term_3
+        term_2 = params.c2 * (r / σ_eff)^2
+        term_3 = params.c4 * (r / σ_eff)^4
+        return term_1 + params.c0 + term_2 + term_3
     else
         return 0.0
     end
 end
 
-function pair_force(
-    r_vec::Vec2, r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams
-)
-    σ_eff = 0.5 * (sigma_i + sigma_j)
-    σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
+function pair_force(r_vec::Vec2, r::Float64, σ_eff::Float64, params::SimulationParams)
     if r < params.r_cut * σ_eff
-        c2 = 48.0 / (params.r_cut^14)
-        c4 = -21.0 / (params.r_cut^16)
         force_mag =
-            12.0 * σ_eff^12 / r^13 - 2.0 * c2 * r / (σ_eff^2) - 4.0 * c4 * r^3 / (σ_eff^4)
+            12.0 * σ_eff^12 / r^13 - 2.0 * params.c2 * r / (σ_eff^2) -
+            4.0 * params.c4 * r^3 / (σ_eff^4)
         return (force_mag * r_vec) / r
     else
         return Vec2(0.0, 0.0)
@@ -174,16 +166,14 @@ end
 ###############################
 # Cell List Construction      #
 ###############################
-function build_cell_list(
-    positions::Vector{Vec2}, params::SimulationParams, max_diameter::Float64
-)
-    max_r_cut_dist = params.r_cut * max_diameter
-    n_cells_x = max(Int(floor(params.Lx / max_r_cut_dist)), 1)
-    n_cells_y = max(Int(floor(params.Ly / max_r_cut_dist)), 1)
-    cell_size_x = params.Lx / n_cells_x
-    cell_size_y = params.Ly / n_cells_y
+function build_cell_list(positions::Vector{Vec2}, p::SimulationParams, d_max::Float64)
+    max_r_dist = p.r_cut * d_max
+    n_cells_x = max(Int(floor(p.Lx / max_r_dist)), 1)
+    n_cells_y = max(Int(floor(p.Ly / max_r_dist)), 1)
+    cell_size_x = p.Lx / n_cells_x
+    cell_size_y = p.Ly / n_cells_y
     cell_list = [Int[] for _ in 1:n_cells_x, _ in 1:n_cells_y]
-    for (i, pos) in enumerate(positions)
+    @inbounds for (i, pos) in enumerate(positions)
         cx = mod(floor(Int, pos[1] / cell_size_x), n_cells_x) + 1
         cy = mod(floor(Int, pos[2] / cell_size_y), n_cells_y) + 1
         push!(cell_list[cx, cy], i)
@@ -191,47 +181,41 @@ function build_cell_list(
     return cell_list, n_cells_x, n_cells_y, cell_size_x, cell_size_y
 end
 
+# extra cells required so the neighbour stencil spans |Δx|=γ·Lx
+@inline n_extra_cells(γ::Float64, cell_size_x::Float64, Ly::Float64) =
+    ceil(Int, abs(γ) * Ly / cell_size_x)
+
 ##########################################
 # Compute Forces and Total Energy        #
 ##########################################
 function compute_forces(
-    positions::Vector{Vec2},
-    diameters::Vector{Float64},
-    gamma::Float64,
-    params::SimulationParams,
+    positions::Vector{Vec2}, diameters::Vector{Float64}, γ::Float64, p::SimulationParams
 )
     Np = length(positions)
     forces = [Vec2(0.0, 0.0) for _ in 1:Np]
     energy = 0.0
-    cell_list, n_cells_x, n_cells_y, _, _ = build_cell_list(
-        positions, params, maximum(diameters)
-    )
-    for cx in 1:n_cells_x
-        for cy in 1:n_cells_y
-            cell_particles = cell_list[cx, cy]
-            for i_idx in eachindex(cell_particles)
-                i = cell_particles[i_idx]
-                for dx in -1:1
-                    for dy in -1:1
-                        ncx = mod(cx - 1 + dx, n_cells_x) + 1
-                        ncy = mod(cy - 1 + dy, n_cells_y) + 1
-                        for j in cell_list[ncx, ncy]
-                            if (ncx == cx && ncy == cy && j <= i)
-                                continue
-                            end
-                            disp = minimum_image(positions[i], positions[j], gamma, params)
-                            r = norm(disp)
-                            sigma_i = diameters[i]
-                            sigma_j = diameters[j]
-                            σ_eff = 0.5 * (sigma_i + sigma_j)
-                            σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
-                            if r < params.r_cut * σ_eff
-                                energy += pair_potential_energy(r, sigma_i, sigma_j, params)
-                                fpair = pair_force(disp, r, sigma_i, sigma_j, params)
-                                forces[i] += fpair
-                                forces[j] -= fpair
-                            end
-                        end
+
+    cell_list, nx, ny, cell_size_x, _ = build_cell_list(positions, p, maximum(diameters))
+    extra = n_extra_cells(γ, cell_size_x, p.Ly)
+
+    @inbounds for cx in 1:nx, cy in 1:ny
+        cell_particles = cell_list[cx, cy]
+        for i_local in eachindex(cell_particles)
+            i = cell_particles[i_local]
+            for dx in (-1 - extra):(1 + extra), dy in -1:1
+                ncx = mod(cx - 1 + dx, nx) + 1
+                ncy = mod(cy - 1 + dy, ny) + 1
+                for j in cell_list[ncx, ncy]
+                    (ncx == cx && ncy == cy && j <= i) && continue
+                    disp = minimum_image(positions[i], positions[j], γ, p)
+                    r = norm(disp)
+                    σ_i, σ_j = diameters[i], diameters[j]
+                    σ_eff = 0.5 * (σ_i + σ_j) * (1.0 - p.non_additivity * abs(σ_i - σ_j))
+                    if r < p.r_cut * σ_eff
+                        energy += pair_potential_energy(r, σ_eff, p)  # unchanged call
+                        fpair = pair_force(disp, r, σ_eff, p)
+                        forces[i] += fpair
+                        forces[j] -= fpair
                     end
                 end
             end
@@ -244,47 +228,36 @@ end
 # Compute Stress Tensor                  #
 ##########################################
 function compute_stress_tensor(
-    positions::Vector{Vec2},
-    diameters::Vector{Float64},
-    gamma::Float64,
-    params::SimulationParams,
+    positions::Vector{Vec2}, diameters::Vector{Float64}, γ::Float64, p::SimulationParams
 )
-    V = params.Lx * params.Ly
+    V = p.Lx * p.Ly
     stress = zeros(2, 2)
-    cell_list, n_cells_x, n_cells_y, _, _ = build_cell_list(
-        positions, params, maximum(diameters)
-    )
-    for cx in 1:n_cells_x
-        for cy in 1:n_cells_y
-            cell_particles = cell_list[cx, cy]
-            for i_idx in eachindex(cell_particles)
-                i = cell_particles[i_idx]
-                for dx in -1:1
-                    for dy in -1:1
-                        ncx = mod(cx - 1 + dx, n_cells_x) + 1
-                        ncy = mod(cy - 1 + dy, n_cells_y) + 1
-                        for j in cell_list[ncx, ncy]
-                            if (ncx == cx && ncy == cy && j <= i)
-                                continue
-                            end
-                            disp = minimum_image(positions[i], positions[j], gamma, params)
-                            r = norm(disp)
-                            sigma_i = diameters[i]
-                            sigma_j = diameters[j]
-                            σ_eff = 0.5 * (sigma_i + sigma_j)
-                            σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
-                            if r < params.r_cut * σ_eff
-                                fpair = pair_force(disp, r, sigma_i, sigma_j, params)
-                                stress .+= disp * transpose(fpair)
-                            end
-                        end
-                    end
+
+    cell_list, nx, ny, cell_size_x, _ = build_cell_list(positions, p, maximum(diameters))
+    extra = n_extra_cells(γ, cell_size_x, p.Ly)
+
+    @inbounds for cx in 1:nx, cy in 1:ny
+        cell_particles = cell_list[cx, cy]
+        for i_local in eachindex(cell_particles)
+            i = cell_particles[i_local]
+            for dx in (-1 - extra):(1 + extra), dy in -1:1
+                ncx = mod(cx - 1 + dx, nx) + 1
+                ncy = mod(cy - 1 + dy, ny) + 1
+                for j in cell_list[ncx, ncy]
+                    (ncx == cx && ncy == cy && j <= i) && continue
+                    disp = minimum_image(positions[i], positions[j], γ, p)
+                    r = norm(disp)
+                    σ_i, σ_j = diameters[i], diameters[j]
+                    σ_eff = 0.5 * (σ_i + σ_j) * (1.0 - p.non_additivity * abs(σ_i - σ_j))
+                    (r < p.r_cut * σ_eff) || continue
+                    fpair = pair_force(disp, r, σ_eff, p)
+                    # Stress is negative of the force times the displacement
+                    stress .-= disp * transpose(fpair)
                 end
             end
         end
     end
-    stress ./= V
-    return stress
+    return stress ./ V
 end
 
 ##########################################
@@ -317,10 +290,14 @@ function fire_minimization!(
     # Use a variable to check convergence
     convergence = false
 
-    for _ in 1:(params.fire_max_steps)
+    for step in 1:(params.fire_max_steps)
         forces, energy = compute_forces(positions, diameters, gamma, params)
 
         F_norm = sqrt(sum(norm(f)^2 for f in forces))
+
+        if mod(step, 100) == 0
+            @info "FIRE step $step: F_norm = $F_norm, dt = $dt"
+        end
 
         if F_norm < params.fire_tol
             convergence = true
@@ -356,7 +333,8 @@ function fire_minimization!(
                     v[i] = (1 - α) * v[i] + α * (v_norm / f_norm) * forces[i]
                 end
             end
-            dt = min(dt * params.f_inc, params.dt_max)
+            adaptive_dt = max(5e-3, params.dt_max / (1.0 + gamma^2))
+            dt = min(dt * params.f_inc, adaptive_dt)
             α *= 0.99
         else
             dt *= params.f_dec
@@ -428,7 +406,6 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     end
 
     # Define the parameters for shearing
-    params.dgamma = 1e-4
     gamma_max = 0.2
     gamma = 0.0
     # Initial energy minimization.
