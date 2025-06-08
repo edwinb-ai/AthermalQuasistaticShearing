@@ -410,12 +410,15 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     println("Initial Stress tensor:")
     println(compute_stress_tensor(positions, diameters, gamma, params))
 
+    # Create a directory to save everything
+    save_dir = mkdir("aqs_results")
+
     # Save the initial configuration.
     save_configuration("initial_configuration.xyz", positions, diameters, params)
 
     # Let's open a file to save the energy information at every step
-    energy_file = open("energy_aqs.txt", "w")
-    stress_file = open("stress_aqs.txt", "w")
+    energy_file = open(joinpath(save_dir, "energy_aqs.txt"), "w")
+    stress_file = open(joinpath(save_dir, "stress_aqs.txt"), "w")
 
     step = 0
     # Main loop: apply shear until a plastic event is detected.
@@ -459,7 +462,8 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         # end
         e_prev = e_current
 
-        save_configuration(@sprintf("conf_%.4g.xyz", gamma), positions, diameters, params)
+        save_filename = joinpath(save_dir, @sprintf("conf_%.4g.xyz", gamma))
+        save_configuration(save_filename, positions, diameters, params)
     end
 
     # (Optional) At the end, save the final configuration.
