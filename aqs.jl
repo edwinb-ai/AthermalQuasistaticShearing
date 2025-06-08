@@ -170,8 +170,8 @@ end
 ###############################
 function build_cell_list(positions::Vector{Vec2}, p::SimulationParams, d_max::Float64)
     max_r_dist = p.r_cut * d_max
-    n_cells_x = max(Int(floor(p.Lx / max_r_dist)), 1)
-    n_cells_y = max(Int(floor(p.Ly / max_r_dist)), 1)
+    n_cells_y = ceil(Int, p.Ly / max_r_dist)
+    n_cells_x = ceil(Int, p.Lx / max_r_dist)
     cell_size_x = p.Lx / n_cells_x
     cell_size_y = p.Ly / n_cells_y
     cell_list = [Int[] for _ in 1:n_cells_x, _ in 1:n_cells_y]
