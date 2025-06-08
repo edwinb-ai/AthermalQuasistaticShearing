@@ -29,7 +29,7 @@ function default_params()
         10.0,      # Ly
         100,       # N (will be overwritten if configuration file is used)
         1.25,      # r_cut
-        1e-5,      # dgamma (strain increment)
+        1e-4,      # dgamma (strain increment)
         1e-6,      # cg_tol (CG convergence tolerance)
         100000,    # cg_max_steps (CG max iterations)
         -1e-6,     # plastic_threshold (plastic event if ΔE/Δγ < threshold)
@@ -617,16 +617,16 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         )
         # Check if CG converged
         if !convergence
-            @error "Conjugate Gradient did not converge at γ = $gamma!"
-            @info "Halving the strain increment and retrying..."
-            if params.dgamma < gamma_min
-                @error "Strain increment too small; stopping simulation."
-                exit(1)
-            end
-            params.dgamma /= 2.0
-            gamma -= params.dgamma  # Roll back the gamma increment
-            step -= 1  # Roll back the step count
-            continue
+            @error "Conjugate Gradient did not converge at γ = $gamma"
+            # @info "Halving the strain increment and retrying..."
+            # if params.dgamma < gamma_min
+            #     @error "Strain increment too small; stopping simulation."
+            #     exit(1)
+            # end
+            # params.dgamma /= 2.0
+            # gamma -= params.dgamma  # Roll back the gamma increment
+            # step -= 1  # Roll back the step count
+            break
         end
         # Normalize the energy per particle.
         e_current /= params.N
@@ -669,4 +669,4 @@ end
 ###########################
 # Run the Simulation      #
 ###########################
-run_athermal_quasistatic("initial_poly.xyz")
+run_athermal_quasistatic("init.xyz")

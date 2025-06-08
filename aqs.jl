@@ -20,6 +20,7 @@ mutable struct SimulationParams
     f_inc::Float64        # FIRE dt increase factor
     f_dec::Float64        # FIRE dt decrease factor
     alpha0::Float64       # FIRE initial mixing parameter
+    Nmin::Float64
     dgamma::Float64       # Strain increment per shear step
     fire_tol::Float64     # FIRE convergence tolerance
     fire_max_steps::Int   # Maximum FIRE iterations per shear step
@@ -41,14 +42,15 @@ function default_params()
         10.0,      # Ly
         100,       # N (will be overwritten if configuration file is used)
         default_r_cut,      # r_cut
-        0.01,      # dt_initial
-        0.05,      # dt_max
+        0.001,      # dt_initial
+        0.01,      # dt_max
         1.1,       # f_inc
         0.5,       # f_dec
         0.1,       # alpha0
+        5,
         1e-4,      # dgamma (strain increment)
         1e-6,      # fire_tol
-        1000000,    # fire_max_steps
+        100000,    # fire_max_steps
         -1e-6,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,        # non_additivity
         c0,
@@ -279,14 +281,12 @@ function fire_minimization!(
     gamma::Float64,
     params::SimulationParams,
 )
-    Np = length(positions)
-    v = [Vec2(0.0, 0.0) for _ in 1:Np]
+    v = [Vec2(0.0, 0.0) for _ in eachindex(positions)]
     dt = params.dt_initial
     α = params.alpha0
+    steps_since_neg = 0
+    ndof = 2.0 * (params.N - 1.0)  # Number of degrees of freedom (2D system)
 
-    no_progress_limit = 50
-    no_progress_counter = 0
-    best_F_norm = Inf
     # Use a variable to check convergence
     convergence = false
 
@@ -296,55 +296,42 @@ function fire_minimization!(
         F_norm = sqrt(sum(norm(f)^2 for f in forces))
 
         if mod(step, 100) == 0
-            @info "FIRE step $step: F_norm = $F_norm, dt = $dt"
+            @info "FIRE step $step: F_norm = $(F_norm / sqrt(ndof)), dt = $dt"
         end
 
-        if F_norm < params.fire_tol
+        if F_norm / sqrt(ndof) < params.fire_tol
             convergence = true
             return energy, convergence
         end
 
-        if F_norm < best_F_norm * 0.99
-            best_F_norm = F_norm
-            no_progress_counter = 0
-        else
-            no_progress_counter += 1
-        end
-
-        if no_progress_counter >= no_progress_limit
-            for i in 1:Np
-                v[i] = Vec2(0.0, 0.0)
-            end
-            dt = params.dt_initial
-            no_progress_counter = 0
-        end
-
-        for i in 1:Np
+        for i in eachindex(v)
             v[i] += dt * forces[i]
         end
 
-        P = sum(dot(v[i], forces[i]) for i in 1:Np)
-
-        if P > 0
-            v_norm = sqrt(sum(norm(v[i])^2 for i in 1:Np))
-            f_norm = sqrt(sum(norm(forces[i])^2 for i in 1:Np))
-            if v_norm > 0 && f_norm > 0
-                for i in 1:Np
-                    v[i] = (1 - α) * v[i] + α * (v_norm / f_norm) * forces[i]
-                end
+        P = sum(dot(v[i], forces[i]) for i in eachindex(v))
+        v_norm = sqrt(sum(norm(vi)^2 for vi in v))
+        f_norm = sqrt(sum(norm(f)^2 for f in forces))
+        if v_norm > 0 && f_norm > 0
+            scale = α * (v_norm / f_norm)
+            for i in eachindex(v)
+                v[i] = (1 - α) * v[i] + scale * forces[i]
             end
-            adaptive_dt = max(5e-3, params.dt_max / (1.0 + gamma^2))
-            dt = min(dt * params.f_inc, adaptive_dt)
-            α *= 0.99
-        else
-            dt *= params.f_dec
-            for i in 1:Np
-                v[i] = Vec2(0.0, 0.0)
-            end
-            α = params.alpha0
         end
 
-        for i in 1:Np
+        if P > 0
+            steps_since_neg += 1
+            if steps_since_neg > params.Nmin
+                dt = min(dt * params.f_inc, params.dt_max)
+                α *= 0.99
+            end
+        else
+            dt = max(dt * params.f_dec, params.dt_initial)
+            fill!(v, Vec2(0.0, 0.0))
+            α = params.alpha0
+            steps_since_neg = 0
+        end
+
+        for i in eachindex(positions)
             positions[i] += dt * v[i]
         end
         apply_periodic!(positions, gamma, params)
@@ -352,6 +339,7 @@ function fire_minimization!(
 
     forces, energy = compute_forces(positions, diameters, gamma, params)
     F_norm = sqrt(sum(norm(f)^2 for f in forces))
+    F_norm /= sqrt(ndof)
 
     @warn "FIRE did not converge after $(params.fire_max_steps) steps; final F_norm = $(F_norm)"
 
@@ -442,11 +430,9 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         (e_current, convergence) = fire_minimization!(positions, diameters, gamma, params)
         # Check if FIRE converged
         if !convergence
-            @error "FIRE did not converge at γ = $gamma !"
+            @error "FIRE did not converge at γ = $gamma"
             @info "Stopping the simulation."
-            close(energy_file)
-            close(stress_file)
-            exit(1)
+            break
         end
         # Normalize the energy per particle.
         e_current /= params.N

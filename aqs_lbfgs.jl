@@ -21,21 +21,31 @@ mutable struct SimulationParams
     lbfgs_m::Int                   # L-BFGS memory parameter (number of stored vectors)
     plastic_threshold::Float64     # Threshold for (ΔE/Δγ) to detect a plastic event
     non_additivity::Float64        # Non-additivity parameter for the effective diameter
+    c0::Float64
+    c2::Float64
+    c4::Float64
 end
 
 # Default parameters.
 function default_params()
+    default_r_cut = 1.25
+    c0 = -28.0 / default_r_cut^12
+    c2 = 48.0 / default_r_cut^14
+    c4 = -21.0 / default_r_cut^16
     return SimulationParams(
         10.0,      # Lx (will be overwritten if configuration file is used)
         10.0,      # Ly
         100,       # N (will be overwritten if configuration file is used)
-        1.25,      # r_cut
+        default_r_cut,      # r_cut
         1e-4,      # dgamma (strain increment)
         1e-6,      # lbfgs_tol (L-BFGS convergence tolerance)
         100000,    # lbfgs_max_steps (L-BFGS max iterations)
         10,        # lbfgs_m (L-BFGS memory parameter)
         -1e-6,     # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,       # non_additivity
+        c0,
+        c2,
+        c4,
     )
 end
 
@@ -664,6 +674,12 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         (e_current, grad_norm, convergence) = lbfgs_minimization!(
             positions, diameters, gamma, params
         )
+        if !convergence
+            @error "L-BFGS did not converge at step $step (γ = $gamma)!"
+            close(energy_file)
+            close(stress_file)
+            exit(1)
+        end
         # Normalize the energy per particle.
         e_current /= params.N
 
