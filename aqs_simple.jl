@@ -42,14 +42,14 @@ function default_params()
         10.0,      # Ly
         100,       # N (will be overwritten if configuration file is used)
         default_r_cut,      # r_cut
-        0.001,      # dt_initial
-        0.01,      # dt_max
+        0.005,      # dt_initial
+        0.02,      # dt_max
         1.1,       # f_inc
         0.5,       # f_dec
         0.1,       # alpha0
         5,
         1e-4,      # dgamma (strain increment)
-        1e-8,      # fire_tol
+        1e-6,      # fire_tol
         100000,    # fire_max_steps
         -1e-6,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,        # non_additivity
@@ -208,28 +208,6 @@ function pair_force(r_vec::Vec2, r::Float64, σ_eff::Float64, params::Simulation
     end
 end
 
-###############################
-# Cell List Construction      #
-###############################
-function build_cell_list(positions::Vector{Vec2}, p::SimulationParams, d_max::Float64)
-    max_r_dist = p.r_cut * d_max
-    n_cells_y = ceil(Int, p.Ly / max_r_dist)
-    n_cells_x = ceil(Int, p.Lx / max_r_dist)
-    cell_size_x = p.Lx / n_cells_x
-    cell_size_y = p.Ly / n_cells_y
-    cell_list = [Int[] for _ in 1:n_cells_x, _ in 1:n_cells_y]
-    @inbounds for (i, pos) in enumerate(positions)
-        cx = mod(floor(Int, pos[1] / cell_size_x), n_cells_x) + 1
-        cy = mod(floor(Int, pos[2] / cell_size_y), n_cells_y) + 1
-        push!(cell_list[cx, cy], i)
-    end
-    return cell_list, n_cells_x, n_cells_y, cell_size_x, cell_size_y
-end
-
-# extra cells required so the neighbour stencil spans |Δx|=γ·Lx
-@inline n_extra_cells(γ::Float64, cell_size_x::Float64, Ly::Float64) =
-    ceil(Int, abs(γ) * Ly / cell_size_x)
-
 ##########################################
 # Compute Forces and Total Energy        #
 ##########################################
@@ -240,32 +218,22 @@ function compute_forces(
     forces = [Vec2(0.0, 0.0) for _ in 1:Np]
     energy = 0.0
 
-    cell_list, nx, ny, cell_size_x, _ = build_cell_list(positions, p, maximum(diameters))
-    extra = n_extra_cells(γ, cell_size_x, p.Ly)
-
-    @inbounds for cx in 1:nx, cy in 1:ny
-        cell_particles = cell_list[cx, cy]
-        for i_local in eachindex(cell_particles)
-            i = cell_particles[i_local]
-            for dx in (-1 - extra):(1 + extra), dy in -1:1
-                ncx = mod(cx - 1 + dx, nx) + 1
-                ncy = mod(cy - 1 + dy, ny) + 1
-                for j in cell_list[ncx, ncy]
-                    j <= i && continue
-                    disp = minimum_image(positions[i], positions[j], γ, p)
-                    r = norm(disp)
-                    σ_i, σ_j = diameters[i], diameters[j]
-                    σ_eff = 0.5 * (σ_i + σ_j) * (1.0 - p.non_additivity * abs(σ_i - σ_j))
-                    if r < p.r_cut * σ_eff
-                        energy += pair_potential_energy(r, σ_eff, p)  # unchanged call
-                        fpair = pair_force(disp, r, σ_eff, p)
-                        forces[i] += fpair
-                        forces[j] -= fpair
-                    end
-                end
+    @inbounds for i in 1:(Np - 1)
+        for j in (i + 1):Np
+            # minimum-image displacement
+            disp = minimum_image(positions[i], positions[j], γ, p)
+            r = norm(disp)
+            σ_i, σ_j = diameters[i], diameters[j]
+            σ_eff = 0.5 * (σ_i + σ_j) * (1.0 - p.non_additivity * abs(σ_i - σ_j))
+            if r < p.r_cut * σ_eff
+                energy += pair_potential_energy(r, σ_eff, p)
+                fpair = pair_force(disp, r, σ_eff, p)
+                forces[i] += fpair
+                forces[j] -= fpair
             end
         end
     end
+
     return forces, energy
 end
 
@@ -277,31 +245,22 @@ function compute_stress_tensor(
 )
     V = p.Lx * p.Ly
     stress = zeros(2, 2)
+    Np = length(positions)
 
-    cell_list, nx, ny, cell_size_x, _ = build_cell_list(positions, p, maximum(diameters))
-    extra = n_extra_cells(γ, cell_size_x, p.Ly)
-
-    @inbounds for cx in 1:nx, cy in 1:ny
-        cell_particles = cell_list[cx, cy]
-        for i_local in eachindex(cell_particles)
-            i = cell_particles[i_local]
-            for dx in (-1 - extra):(1 + extra), dy in -1:1
-                ncx = mod(cx - 1 + dx, nx) + 1
-                ncy = mod(cy - 1 + dy, ny) + 1
-                for j in cell_list[ncx, ncy]
-                    j <= i && continue
-                    disp = minimum_image(positions[i], positions[j], γ, p)
-                    r = norm(disp)
-                    σ_i, σ_j = diameters[i], diameters[j]
-                    σ_eff = 0.5 * (σ_i + σ_j) * (1.0 - p.non_additivity * abs(σ_i - σ_j))
-                    (r < p.r_cut * σ_eff) || continue
-                    fpair = pair_force(disp, r, σ_eff, p)
-                    # Stress is negative of the force times the displacement
-                    stress .-= disp * transpose(fpair)
-                end
+    @inbounds for i in 1:(Np - 1)
+        for j in (i + 1):Np
+            disp = minimum_image(positions[i], positions[j], γ, p)
+            r = norm(disp)
+            σ_i, σ_j = diameters[i], diameters[j]
+            σ_eff = 0.5 * (σ_i + σ_j) * (1.0 - p.non_additivity * abs(σ_i - σ_j))
+            if r < p.r_cut * σ_eff
+                fpair = pair_force(disp, r, σ_eff, p)
+                # stress contribution: – disp ⊗ f
+                stress .-= disp * transpose(fpair)
             end
         end
     end
+
     return stress ./ V
 end
 
@@ -337,6 +296,10 @@ function fire_minimization!(
         forces, energy = compute_forces(positions, diameters, gamma, params)
 
         F_norm = sqrt(sum(norm(f)^2 for f in forces))
+
+        if mod(step, 100) == 0
+            @info "FIRE step $step: F_norm = $(F_norm / sqrt(ndof)), dt = $dt"
+        end
 
         if F_norm / sqrt(ndof) < params.fire_tol
             convergence = true
@@ -450,7 +413,7 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     println(compute_stress_tensor(positions, diameters, gamma, params))
 
     # Create a directory to save everything
-    save_dir = mkpath("aqs_results")
+    save_dir = mkpath("aqs_results_simple")
 
     # Save the initial configuration.
     save_configuration("initial_configuration.xyz", positions, diameters, params)
