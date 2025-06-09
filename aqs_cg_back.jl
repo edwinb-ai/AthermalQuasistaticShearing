@@ -290,138 +290,87 @@ function plastic_event_detected(
 end
 
 ##########################################################################
-# Helper: Evaluate candidate point along the search direction
+# Helper: Evaluate energy and gradient at a point
 ##########################################################################
-function evaluate_candidate(
-    α::Float64,
-    x_old::Vector{Vec2},
-    d::Vector{Vec2},
+function evaluate_point(
+    positions::Vector{Vec2},
     diameters::Vector{Float64},
     gamma::Float64,
     params::SimulationParams,
 )
-    # Compute candidate positions: x_candidate = x_old + α * d
-    candidate = [x_old[i] + α * d[i] for i in 1:length(x_old)]
-    apply_periodic!(candidate, gamma, params)
-    forces, E = compute_forces(candidate, diameters, gamma, params)
+    forces, energy = compute_forces(positions, diameters, gamma, params)
     # Gradient is minus the forces.
-    candidate_grad = [-f for f in forces]
-    return candidate, E, candidate_grad
+    gradient = [-f for f in forces]
+    return energy, gradient
 end
 
 ##########################################################################
-# Helper: Zoom procedure to find an acceptable α in [α_lo, α_hi]
+# Backtracking Line Search (Armijo condition)
 ##########################################################################
-function zoom(
-    α_lo::Float64,
-    α_hi::Float64,
-    x_old::Vector{Vec2},
-    d::Vector{Vec2},
-    E_current::Float64,
-    d_dot_g_current::Float64,
+function backtracking_line_search!(
+    positions::Vector{Vec2},
     diameters::Vector{Float64},
     gamma::Float64,
     params::SimulationParams,
-    c1::Float64,
-    c2::Float64,
+    search_direction::Vector{Vec2},
+    current_energy::Float64,
+    current_gradient::Vector{Vec2},
 )
-    max_zoom_iter = 20
-    candidate = Vector{Vec2}()
-    E_candidate = Inf
-    candidate_grad = Vector{Vec2}()
-    α_j = 0.0
-    for iter in 1:max_zoom_iter
-        α_j = (α_lo + α_hi) / 2.0
-        candidate, E_candidate, candidate_grad = evaluate_candidate(
-            α_j, x_old, d, diameters, gamma, params
-        )
-        # Evaluate Armijo condition at α_j.
-        if (E_candidate > E_current + c1 * α_j * d_dot_g_current) ||
-            (E_candidate >= evaluate_candidate(α_lo, x_old, d, diameters, gamma, params)[2])
-            α_hi = α_j
-        else
-            d_dot_g_candidate = sum(dot(d[i], candidate_grad[i]) for i in 1:length(d))
-            if abs(d_dot_g_candidate) <= -c2 * d_dot_g_current
-                return α_j, candidate, E_candidate, candidate_grad
-            end
-            if d_dot_g_candidate * (α_hi - α_lo) >= 0
-                α_hi = α_lo
-            end
-            α_lo = α_j
-        end
-    end
-    return α_j, candidate, E_candidate, candidate_grad
-end
+    # Backtracking parameters
+    c1 = 1e-4          # Armijo parameter (sufficient decrease)
+    ρ = 0.5            # Step reduction factor
+    α_max = 1.0        # Initial step size
+    α_min = 1e-12      # Minimum step size
 
-##########################################################################
-# Wolfe Conditions Based Line Search
-##########################################################################
-function line_search_wolfe!(
-    x_old::Vector{Vec2},
-    diameters::Vector{Float64},
-    gamma::Float64,
-    params::SimulationParams,
-    d::Vector{Vec2},
-    E_current::Float64,
-    g_current::Vector{Vec2},
-    c1::Float64,
-    c2::Float64,
-)
-    # Compute directional derivative at the starting point:
-    d_dot_g_current = sum(dot(d[i], g_current[i]) for i in 1:length(d))
-    α_prev = 0.0
-    α = 1.0  # initial trial step
-    candidate, E_candidate, candidate_grad = evaluate_candidate(
-        α, x_old, d, diameters, gamma, params
+    # Compute directional derivative
+    directional_derivative = sum(
+        dot(search_direction[i], current_gradient[i]) for i in 1:length(search_direction)
     )
-    max_iter = 20
-    for iter in 1:max_iter
-        if (E_candidate > E_current + c1 * α * d_dot_g_current) || (
-            iter > 1 &&
-            E_candidate >=
-            evaluate_candidate(α_prev, x_old, d, diameters, gamma, params)[2]
-        )
-            # If not, zoom between α_prev and α.
-            return zoom(
-                α_prev,
-                α,
-                x_old,
-                d,
-                E_current,
-                d_dot_g_current,
-                diameters,
-                gamma,
-                params,
-                c1,
-                c2,
-            )
-        end
-        d_dot_g_candidate = sum(dot(d[i], candidate_grad[i]) for i in 1:length(d))
-        if abs(d_dot_g_candidate) <= -c2 * d_dot_g_current
-            return α, candidate, E_candidate, candidate_grad
-        end
-        if d_dot_g_candidate >= 0
-            return zoom(
-                α,
-                α_prev,
-                x_old,
-                d,
-                E_current,
-                d_dot_g_current,
-                diameters,
-                gamma,
-                params,
-                c1,
-                c2,
-            )
-        end
-        α_prev = α
-        α *= 2.0  # increase step size
-        candidate, E_candidate, candidate_grad = evaluate_candidate(
-            α, x_old, d, diameters, gamma, params
-        )
+
+    # If not a descent direction, return minimal step
+    if directional_derivative >= 0
+        return α_min, positions, current_energy, current_gradient
     end
-    return α, candidate, E_candidate, candidate_grad
+
+    α = α_max
+    candidate_positions = copy(positions)
+
+    # Backtracking loop
+    while α >= α_min
+        # Compute candidate position: x_new = x_old + α * search_direction
+        for i in 1:length(positions)
+            candidate_positions[i] = positions[i] + α * search_direction[i]
+        end
+        apply_periodic!(candidate_positions, gamma, params)
+
+        # Evaluate energy at candidate point
+        candidate_energy, candidate_gradient = evaluate_point(
+            candidate_positions, diameters, gamma, params
+        )
+
+        # Check Armijo condition: f(x + α*d) ≤ f(x) + c1*α*∇f(x)ᵀd
+        armijo_threshold = current_energy + c1 * α * directional_derivative
+
+        if candidate_energy <= armijo_threshold
+            # Accept this step size
+            return α, candidate_positions, candidate_energy, candidate_gradient
+        end
+
+        # Reduce step size and try again
+        α *= ρ
+    end
+
+    # If we reach here, even the minimal step failed
+    # Return minimal step anyway (better than not moving)
+    for i in 1:length(positions)
+        candidate_positions[i] = positions[i] + α_min * search_direction[i]
+    end
+    apply_periodic!(candidate_positions, gamma, params)
+    candidate_energy, candidate_gradient = evaluate_point(
+        candidate_positions, diameters, gamma, params
+    )
+
+    return α_min, candidate_positions, candidate_energy, candidate_gradient
 end
 
 ##########################################
@@ -436,34 +385,26 @@ function conjugate_gradient_minimization!(
     Np = length(positions)
 
     # Compute initial forces and energy.
-    forces, energy = compute_forces(positions, diameters, gamma, params)
-    # Gradient: g = -forces.
-    g = [-f for f in forces]
+    energy, gradient = evaluate_point(positions, diameters, gamma, params)
+
     # Initial search direction: steepest descent.
-    d = [-g_i for g_i in g]
+    search_direction = [-g for g in gradient]
 
     no_progress_limit = 50
     no_progress_counter = 0
     best_gradient_norm = Inf
-    # Use a variable to check convergence
     convergence = false
 
-    # Wolfe parameters
-    c1 = 1e-4
-    c2 = 0.9
-
-    # Save current positions as x_old.
-    x_old = [copy(positions[i]) for i in 1:Np]
-
     for iter in 1:(params.cg_max_steps)
-        # Check convergence: norm of gradient (force).
-        gradient_norm = sqrt(sum(norm(gi)^2 for gi in g))
+        # Check convergence: norm of gradient.
+        gradient_norm = sqrt(sum(norm(g)^2 for g in gradient))
 
         if gradient_norm < params.cg_tol
             convergence = true
-            return energy, gradient_norm, convergence
+            return energy, convergence
         end
 
+        # Track progress
         if gradient_norm < best_gradient_norm * 0.99
             best_gradient_norm = gradient_norm
             no_progress_counter = 0
@@ -471,60 +412,53 @@ function conjugate_gradient_minimization!(
             no_progress_counter += 1
         end
 
+        # Reset to steepest descent if no progress
         if no_progress_counter >= no_progress_limit
-            # Reset to steepest descent
-            d = [-g_i for g_i in g]
+            search_direction = [-g for g in gradient]
             no_progress_counter = 0
         end
 
         # Check if search direction is a descent direction
-        d_dot_g = sum(dot(d[i], g[i]) for i in 1:Np)
-        if d_dot_g >= 0
-            # Not a descent direction; reset to steepest descent.
-            d = [-g_i for g_i in g]
-            d_dot_g = sum(dot(d[i], g[i]) for i in 1:Np)
+        directional_derivative = sum(dot(search_direction[i], gradient[i]) for i in 1:Np)
+        if directional_derivative >= 0
+            # Reset to steepest descent
+            search_direction = [-g for g in gradient]
         end
 
-        # --- Wolfe line search ---
-        α, candidate, E_candidate, candidate_grad = line_search_wolfe!(
-            x_old, diameters, gamma, params, d, energy, g, c1, c2
+        # Perform backtracking line search
+        α, new_positions, new_energy, new_gradient = backtracking_line_search!(
+            positions, diameters, gamma, params, search_direction, energy, gradient
         )
 
-        # Update positions to candidate.
+        # Update positions and energy
         for i in 1:Np
-            positions[i] = candidate[i]
+            positions[i] = new_positions[i]
         end
-        # Update energy.
-        energy = E_candidate
+        energy = new_energy
 
-        # Compute new gradient.
-        g_new = candidate_grad
-
-        # Compute Polak–Ribiere coefficient.
-        num = 0.0
-        den = 0.0
+        # Compute Polak–Ribiere coefficient for next iteration
+        numerator = 0.0
+        denominator = 0.0
         for i in 1:Np
-            num += dot(g_new[i] - g[i], g_new[i])
-            den += dot(g[i], g[i])
+            numerator += dot(new_gradient[i] - gradient[i], new_gradient[i])
+            denominator += dot(gradient[i], gradient[i])
         end
-        β = max(0.0, num / den)
+        β = max(0.0, numerator / denominator)
 
-        # Update search direction.
+        # Update search direction using Polak-Ribiere formula
         for i in 1:Np
-            d[i] = -g_new[i] + β * d[i]
+            search_direction[i] = -new_gradient[i] + β * search_direction[i]
         end
 
-        # Update the old positions and gradient.
-        x_old = [copy(positions[i]) for i in 1:Np]
-        g = g_new
+        # Update gradient for next iteration
+        gradient = new_gradient
     end
 
-    forces, energy = compute_forces(positions, diameters, gamma, params)
-    gradient_norm = sqrt(sum(norm(f)^2 for f in forces))
+    # Final gradient norm check
+    final_gradient_norm = sqrt(sum(norm(g)^2 for g in gradient))
+    @warn "Conjugate Gradient did not converge after $(params.cg_max_steps) steps; final gradient norm = $(final_gradient_norm)"
 
-    @warn "Conjugate Gradient did not converge after $(params.cg_max_steps) steps; final gradient norm = $(gradient_norm)"
-
-    return energy, gradient_norm, convergence
+    return energy, convergence
 end
 
 ##############################################
@@ -581,7 +515,7 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     gamma = 0.0
     # Initial energy minimization.
     println("Performing initial energy minimization (γ = $gamma)...")
-    (e_prev, grad_norm, convergence) = conjugate_gradient_minimization!(
+    (e_prev, convergence) = conjugate_gradient_minimization!(
         positions, diameters, gamma, params
     )
     # Check if CG converged
@@ -591,7 +525,7 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     end
     # Normalize the energy per particle.
     e_prev /= params.N
-    println("γ = $gamma, Energy per particle = $e_prev, Gradient norm = $grad_norm")
+    println("γ = $gamma, Energy per particle = $e_prev")
     println("Initial Stress tensor:")
     println(compute_stress_tensor(positions, diameters, gamma, params))
 
@@ -612,7 +546,7 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         end
         gamma += params.dgamma
         apply_periodic!(positions, gamma, params)
-        (e_current, grad_norm, convergence) = conjugate_gradient_minimization!(
+        (e_current, convergence) = conjugate_gradient_minimization!(
             positions, diameters, gamma, params
         )
         # Check if CG converged
@@ -635,9 +569,7 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         println(energy_file, e_current)
         flush(energy_file)
 
-        println(
-            "Step $step: γ = $gamma, Energy per particle = $e_current, Gradient norm = $grad_norm",
-        )
+        println("Step $step: γ = $gamma, Energy per particle = $e_current")
         # Write the xy component of the stress tensor to file
         stress_value = compute_stress_tensor(positions, diameters, gamma, params)
         writedlm(stress_file, [gamma stress_value[1, 2]])

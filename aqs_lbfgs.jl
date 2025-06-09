@@ -16,8 +16,9 @@ mutable struct SimulationParams
     N::Int                         # Number of particles
     r_cut::Float64                 # Interaction cutoff (in units of effective diameter)
     dgamma::Float64                # Strain increment per shear step
-    cg_tol::Float64                # CG convergence tolerance
-    cg_max_steps::Int              # Maximum CG iterations per shear step
+    lbfgs_tol::Float64             # L-BFGS convergence tolerance
+    lbfgs_max_steps::Int           # Maximum L-BFGS iterations per shear step
+    lbfgs_m::Int                   # L-BFGS memory parameter (number of stored vectors)
     plastic_threshold::Float64     # Threshold for (ΔE/Δγ) to detect a plastic event
     non_additivity::Float64        # Non-additivity parameter for the effective diameter
 end
@@ -30,8 +31,9 @@ function default_params()
         100,       # N (will be overwritten if configuration file is used)
         1.25,      # r_cut
         1e-5,      # dgamma (strain increment)
-        1e-6,      # cg_tol (CG convergence tolerance)
-        100000,    # cg_max_steps (CG max iterations)
+        1e-6,      # lbfgs_tol (L-BFGS convergence tolerance)
+        100000,    # lbfgs_max_steps (L-BFGS max iterations)
+        10,        # lbfgs_m (L-BFGS memory parameter)
         -1e-6,     # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,       # non_additivity
     )
@@ -207,6 +209,11 @@ function compute_forces(
                     for dy in -1:1
                         ncx = mod(cx - 1 + dx, n_cells_x) + 1
                         ncy = mod(cy - 1 + dy, n_cells_y) + 1
+                        # Skip if this neighbor‐cell is “lexicographically less” than (cx,cy)
+                        if (ncx < cx) || (ncx == cx && ncy < cy)
+                            continue
+                        end
+
                         for j in cell_list[ncx, ncy]
                             if (ncx == cx && ncy == cy && j <= i)
                                 continue
@@ -255,6 +262,11 @@ function compute_stress_tensor(
                     for dy in -1:1
                         ncx = mod(cx - 1 + dx, n_cells_x) + 1
                         ncy = mod(cy - 1 + dy, n_cells_y) + 1
+                        # Skip if this neighbor‐cell is “lexicographically less” than (cx,cy)
+                        if (ncx < cx) || (ncx == cx && ncy < cy)
+                            continue
+                        end
+
                         for j in cell_list[ncx, ncy]
                             if (ncx == cx && ncy == cy && j <= i)
                                 continue
@@ -354,7 +366,7 @@ function zoom(
 end
 
 ##########################################################################
-# Wolfe Conditions Based Line Search
+# Wolfe Conditions Based Line Search (Strong Wolfe)
 ##########################################################################
 function line_search_wolfe!(
     x_old::Vector{Vec2},
@@ -424,46 +436,51 @@ function line_search_wolfe!(
     return α, candidate, E_candidate, candidate_grad
 end
 
-##########################################
-# Conjugate Gradient Energy Minimization #
-##########################################
-function conjugate_gradient_minimization!(
+##########################################################################
+# L-BFGS Energy Minimization
+##########################################################################
+function lbfgs_minimization!(
     positions::Vector{Vec2},
     diameters::Vector{Float64},
     gamma::Float64,
     params::SimulationParams,
 )
     Np = length(positions)
+    m = params.lbfgs_m  # Memory parameter
 
     # Compute initial forces and energy.
     forces, energy = compute_forces(positions, diameters, gamma, params)
     # Gradient: g = -forces.
     g = [-f for f in forces]
-    # Initial search direction: steepest descent.
-    d = [-g_i for g_i in g]
+
+    # Initialize L-BFGS storage
+    s_history = Vector{Vector{Vec2}}()  # Position differences s_k = x_{k+1} - x_k
+    y_history = Vector{Vector{Vec2}}()  # Gradient differences y_k = g_{k+1} - g_k
+    rho_history = Vector{Float64}()     # 1 / (y_k^T s_k)
 
     no_progress_limit = 50
     no_progress_counter = 0
     best_gradient_norm = Inf
-    # Use a variable to check convergence
     convergence = false
 
-    # Wolfe parameters
+    # Strong Wolfe parameters
     c1 = 1e-4
     c2 = 0.9
 
-    # Save current positions as x_old.
+    # Save current positions and gradient
     x_old = [copy(positions[i]) for i in 1:Np]
+    g_old = [copy(g[i]) for i in 1:Np]
 
-    for iter in 1:(params.cg_max_steps)
+    for iter in 1:(params.lbfgs_max_steps)
         # Check convergence: norm of gradient (force).
         gradient_norm = sqrt(sum(norm(gi)^2 for gi in g))
 
-        if gradient_norm < params.cg_tol
+        if gradient_norm < params.lbfgs_tol
             convergence = true
             return energy, gradient_norm, convergence
         end
 
+        # Track progress
         if gradient_norm < best_gradient_norm * 0.99
             best_gradient_norm = gradient_norm
             no_progress_counter = 0
@@ -471,60 +488,138 @@ function conjugate_gradient_minimization!(
             no_progress_counter += 1
         end
 
+        # Reset L-BFGS if no progress
         if no_progress_counter >= no_progress_limit
-            # Reset to steepest descent
-            d = [-g_i for g_i in g]
+            empty!(s_history)
+            empty!(y_history)
+            empty!(rho_history)
             no_progress_counter = 0
         end
+
+        # Compute search direction using L-BFGS two-loop recursion
+        d = lbfgs_two_loop_recursion(g, s_history, y_history, rho_history)
 
         # Check if search direction is a descent direction
         d_dot_g = sum(dot(d[i], g[i]) for i in 1:Np)
         if d_dot_g >= 0
-            # Not a descent direction; reset to steepest descent.
+            # Reset to steepest descent
             d = [-g_i for g_i in g]
+            # Clear L-BFGS history
+            empty!(s_history)
+            empty!(y_history)
+            empty!(rho_history)
             d_dot_g = sum(dot(d[i], g[i]) for i in 1:Np)
         end
 
-        # --- Wolfe line search ---
+        # Perform line search using strong Wolfe conditions
         α, candidate, E_candidate, candidate_grad = line_search_wolfe!(
             x_old, diameters, gamma, params, d, energy, g, c1, c2
         )
 
-        # Update positions to candidate.
+        # Compute s_k = x_{k+1} - x_k
+        s_k = [candidate[i] - x_old[i] for i in 1:Np]
+
+        # Compute y_k = g_{k+1} - g_k
+        y_k = [candidate_grad[i] - g[i] for i in 1:Np]
+
+        # Compute rho_k = 1 / (y_k^T s_k)
+        y_dot_s = sum(dot(y_k[i], s_k[i]) for i in 1:Np)
+
+        # Only update L-BFGS vectors if curvature condition is satisfied
+        if y_dot_s > 1e-14
+            rho_k = 1.0 / y_dot_s
+
+            # Add to history
+            push!(s_history, s_k)
+            push!(y_history, y_k)
+            push!(rho_history, rho_k)
+
+            # Maintain limited memory
+            if length(s_history) > m
+                popfirst!(s_history)
+                popfirst!(y_history)
+                popfirst!(rho_history)
+            end
+        end
+
+        # Update positions, energy, and gradient
         for i in 1:Np
             positions[i] = candidate[i]
         end
-        # Update energy.
         energy = E_candidate
 
-        # Compute new gradient.
-        g_new = candidate_grad
-
-        # Compute Polak–Ribiere coefficient.
-        num = 0.0
-        den = 0.0
-        for i in 1:Np
-            num += dot(g_new[i] - g[i], g_new[i])
-            den += dot(g[i], g[i])
-        end
-        β = max(0.0, num / den)
-
-        # Update search direction.
-        for i in 1:Np
-            d[i] = -g_new[i] + β * d[i]
-        end
-
-        # Update the old positions and gradient.
+        # Update for next iteration
         x_old = [copy(positions[i]) for i in 1:Np]
-        g = g_new
+        g = candidate_grad
     end
 
     forces, energy = compute_forces(positions, diameters, gamma, params)
     gradient_norm = sqrt(sum(norm(f)^2 for f in forces))
 
-    @warn "Conjugate Gradient did not converge after $(params.cg_max_steps) steps; final gradient norm = $(gradient_norm)"
+    @warn "L-BFGS did not converge after $(params.lbfgs_max_steps) steps; final gradient norm = $(gradient_norm)"
 
     return energy, gradient_norm, convergence
+end
+
+##########################################################################
+# L-BFGS Two-Loop Recursion for Computing Search Direction
+##########################################################################
+function lbfgs_two_loop_recursion(
+    g::Vector{Vec2},
+    s_history::Vector{Vector{Vec2}},
+    y_history::Vector{Vector{Vec2}},
+    rho_history::Vector{Float64},
+)
+    # If no history, return steepest descent
+    if isempty(s_history)
+        return [-g_i for g_i in g]
+    end
+
+    k = length(s_history)
+    alpha = zeros(k)
+
+    # Initialize q with current gradient
+    q = [copy(g[i]) for i in 1:length(g)]
+
+    # First loop (backwards)
+    for i in k:-1:1
+        alpha[i] = rho_history[i] * sum(dot(s_history[i][j], q[j]) for j in eachindex(q))
+        for j in eachindex(q)
+            q[j] -= alpha[i] * y_history[i][j]
+        end
+    end
+
+    # Initial Hessian approximation (scaling)
+    if k > 0
+        # Use γ_k = (s_{k-1}^T y_{k-1}) / (y_{k-1}^T y_{k-1}) as initial scaling
+        s_dot_y = sum(
+            dot(s_history[end][i], y_history[end][i]) for i in 1:length(s_history[end])
+        )
+        y_dot_y = sum(
+            dot(y_history[end][i], y_history[end][i]) for i in 1:length(y_history[end])
+        )
+        if y_dot_y > 1e-14
+            gamma = s_dot_y / y_dot_y
+        else
+            gamma = 1.0
+        end
+
+        # Apply initial Hessian: r = H_0 * q = γ * q
+        r = [gamma * q[i] for i in eachindex(q)]
+    else
+        r = [copy(q[i]) for i in eachindex(q)]
+    end
+
+    # Second loop (forwards)
+    for i in 1:k
+        beta = rho_history[i] * sum(dot(y_history[i][j], r[j]) for j in eachindex(r))
+        for j in eachindex(r)
+            r[j] += (alpha[i] - beta) * s_history[i][j]
+        end
+    end
+
+    # Return negative of r (search direction)
+    return [-r[i] for i in eachindex(r)]
 end
 
 ##############################################
@@ -577,14 +672,13 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     # Define the parameters for shearing
     params.dgamma = 1e-4
     gamma_max = 0.2
-    gamma_min = 1e-8
     gamma = 0.0
     # Initial energy minimization.
     println("Performing initial energy minimization (γ = $gamma)...")
-    (e_prev, grad_norm, convergence) = conjugate_gradient_minimization!(
+    (e_prev, grad_norm, convergence) = lbfgs_minimization!(
         positions, diameters, gamma, params
     )
-    # Check if CG converged
+    # Check if L-BFGS converged
     if !convergence
         @error "Initial energy minimization did not converge!"
         return nothing
@@ -595,12 +689,16 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     println("Initial Stress tensor:")
     println(compute_stress_tensor(positions, diameters, gamma, params))
 
+    # Create a new directory for saving all results
+    save_dir = mkdir("lbfgs_results")
     # Save the initial configuration.
-    save_configuration("initial_configuration.xyz", positions, diameters, params)
+    save_configuration(
+        joinpath(save_dir, "initial_configuration.xyz"), positions, diameters, params
+    )
 
     # Let's open a file to save the energy information at every step
-    energy_file = open("energy_aqs_cg.txt", "w")
-    stress_file = open("stress_aqs_cg.txt", "w")
+    energy_file = open(joinpath(save_dir, "energy_aqs_lbfgs.txt"), "w")
+    stress_file = open(joinpath(save_dir, "stress_aqs_lbfgs.txt"), "w")
 
     step = 0
     # Main loop: apply shear until a plastic event is detected.
@@ -612,22 +710,9 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         end
         gamma += params.dgamma
         apply_periodic!(positions, gamma, params)
-        (e_current, grad_norm, convergence) = conjugate_gradient_minimization!(
+        (e_current, grad_norm, convergence) = lbfgs_minimization!(
             positions, diameters, gamma, params
         )
-        # Check if CG converged
-        if !convergence
-            @error "Conjugate Gradient did not converge at γ = $gamma!"
-            @info "Halving the strain increment and retrying..."
-            if params.dgamma < gamma_min
-                @error "Strain increment too small; stopping simulation."
-                exit(1)
-            end
-            params.dgamma /= 2.0
-            gamma -= params.dgamma  # Roll back the gamma increment
-            step -= 1  # Roll back the step count
-            continue
-        end
         # Normalize the energy per particle.
         e_current /= params.N
 
@@ -655,7 +740,8 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         # end
         e_prev = e_current
 
-        save_configuration(@sprintf("conf_%.4g.xyz", gamma), positions, diameters, params)
+        savename_configuration = joinpath(save_dir, @sprintf("conf_%.4g.xyz", gamma))
+        save_configuration(savename_configuration, positions, diameters, params)
     end
 
     # (Optional) At the end, save the final configuration.
@@ -669,4 +755,4 @@ end
 ###########################
 # Run the Simulation      #
 ###########################
-run_athermal_quasistatic("initial_poly.xyz")
+run_athermal_quasistatic("init.xyz")

@@ -1,6 +1,8 @@
 using LinearAlgebra
 using Random
 using StaticArrays
+using DelimitedFiles
+using Printf: @sprintf
 
 # For convenience, define a 2D mutable vector alias.
 const Vec2 = MVector{2,Float64}
@@ -32,15 +34,15 @@ function default_params()
         10.0,      # Ly
         100,       # N (will be overwritten if configuration file is used)
         1.25,      # r_cut
-        1e-4,      # dt_initial
-        1e-3,      # dt_max
-        1.1,       # f_inc
+        0.01,      # dt_initial
+        0.01,      # dt_max
+        1.02,       # f_inc
         0.5,       # f_dec
         0.1,       # alpha0
         1e-5,      # dgamma (strain increment)
-        1e-5,      # fire_tol
-        1000000,    # fire_max_steps
-        0.0,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
+        1e-6,      # fire_tol
+        100000,    # fire_max_steps
+        -1e-6,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,        # non_additivity
     )
 end
@@ -51,8 +53,8 @@ end
 # The file is expected to have the following format:
 #
 #   <N_particles>
-#   Lattice="Lx 0 0 Lx" Properties=...
-#   <species> <x> <y> <radius>
+#   Lattice="Lx 0 0 0 Ly 0 0 0 Lz" Properties=...
+#   <species> <id> <radius> <x> <y>
 #   ...
 #
 # (For a 2D simulation only x and y are used.)
@@ -70,12 +72,12 @@ function read_configuration(filename::String)
         end
         lattice_str = m.captures[1]
         lattice_tokens = split(lattice_str)
-        if length(lattice_tokens) > 4
+        if length(lattice_tokens) < 9
             error("Unexpected lattice format!")
         end
-        # For 2D, assume Lx is token 1 and Ly is token 4.
+        # For 2D, assume Lx is token 1 and Ly is token 5.
         Lx_file = parse(Float64, lattice_tokens[1])
-        Ly_file = parse(Float64, lattice_tokens[4])
+        Ly_file = parse(Float64, lattice_tokens[5])
 
         # Initialize arrays.
         positions = Vector{Vec2}(undef, N_particles)
@@ -85,14 +87,15 @@ function read_configuration(filename::String)
         for i in 1:N_particles
             line = readline(io)
             tokens = split(strip(line))
-            if length(tokens) < 4
+            if length(tokens) < 5
                 error("Not enough data on line $i of particle data!")
             end
-            x = parse(Float64, tokens[2])
-            y = parse(Float64, tokens[3])
-            positions[i] = Vec2(x, y)
             # The file gives radii; convert to diameter.
-            diameters[i] = parse(Float64, tokens[5]) * 2.0
+            diameters[i] = parse(Float64, tokens[3]) * 2.0
+            # Load the positions
+            x = parse(Float64, tokens[4])
+            y = parse(Float64, tokens[5])
+            positions[i] = Vec2(x, y)
         end
         return positions, Lx_file, Ly_file, diameters
     end
@@ -101,10 +104,20 @@ end
 #################################
 # Utility: Periodic Wrapping    #
 #################################
-function apply_periodic!(positions::Vector{Vec2}, params::SimulationParams)
-    for pos in positions
-        pos[1] = mod(pos[1], params.Lx)
-        pos[2] = mod(pos[2], params.Ly)
+@inline function apply_periodic!(
+    positions::Vector{Vec2}, gamma::Float64, params::SimulationParams
+)
+    @inbounds for pos in positions
+        # 1) wrap in y, record how many boxes we moved
+        n_y = floor(Int, pos[2] / params.Ly)
+        pos[2] -= n_y * params.Ly
+
+        # 2) apply the shear‐offset for that crossing
+        pos[1] -= n_y * gamma * params.Lx
+
+        # 3) now wrap x normally
+        n_x = floor(Int, pos[1] / params.Lx)
+        pos[1] -= n_x * params.Lx
     end
 end
 
@@ -161,12 +174,15 @@ end
 ###############################
 # Cell List Construction      #
 ###############################
-function build_cell_list(positions::Vector{Vec2}, params::SimulationParams)
-    n_cells_x = max(Int(fld(params.Lx, params.r_cut)), 1)
-    n_cells_y = max(Int(fld(params.Ly, params.r_cut)), 1)
+function build_cell_list(
+    positions::Vector{Vec2}, params::SimulationParams, max_diameter::Float64
+)
+    max_r_cut_dist = params.r_cut * max_diameter
+    n_cells_x = max(Int(floor(params.Lx / max_r_cut_dist)), 1)
+    n_cells_y = max(Int(floor(params.Ly / max_r_cut_dist)), 1)
     cell_size_x = params.Lx / n_cells_x
     cell_size_y = params.Ly / n_cells_y
-    cell_list = [Int[] for i in 1:n_cells_x, j in 1:n_cells_y]
+    cell_list = [Int[] for _ in 1:n_cells_x, _ in 1:n_cells_y]
     for (i, pos) in enumerate(positions)
         cx = mod(floor(Int, pos[1] / cell_size_x), n_cells_x) + 1
         cy = mod(floor(Int, pos[2] / cell_size_y), n_cells_y) + 1
@@ -187,7 +203,9 @@ function compute_forces(
     Np = length(positions)
     forces = [Vec2(0.0, 0.0) for _ in 1:Np]
     energy = 0.0
-    cell_list, n_cells_x, n_cells_y, _, _ = build_cell_list(positions, params)
+    cell_list, n_cells_x, n_cells_y, _, _ = build_cell_list(
+        positions, params, maximum(diameters)
+    )
     for cx in 1:n_cells_x
         for cy in 1:n_cells_y
             cell_particles = cell_list[cx, cy]
@@ -233,7 +251,9 @@ function compute_stress_tensor(
 )
     V = params.Lx * params.Ly
     stress = zeros(2, 2)
-    cell_list, n_cells_x, n_cells_y, _, _ = build_cell_list(positions, params)
+    cell_list, n_cells_x, n_cells_y, _, _ = build_cell_list(
+        positions, params, maximum(diameters)
+    )
     for cx in 1:n_cells_x
         for cy in 1:n_cells_y
             cell_particles = cell_list[cx, cy]
@@ -294,12 +314,17 @@ function fire_minimization!(
     no_progress_limit = 50
     no_progress_counter = 0
     best_F_norm = Inf
+    # Use a variable to check convergence
+    convergence = false
 
-    for step in 1:(params.fire_max_steps)
+    for _ in 1:(params.fire_max_steps)
         forces, energy = compute_forces(positions, diameters, gamma, params)
+
         F_norm = sqrt(sum(norm(f)^2 for f in forces))
+
         if F_norm < params.fire_tol
-            return energy
+            convergence = true
+            return energy, convergence
         end
 
         if F_norm < best_F_norm * 0.99
@@ -344,13 +369,15 @@ function fire_minimization!(
         for i in 1:Np
             positions[i] += dt * v[i]
         end
-        apply_periodic!(positions, params)
+        apply_periodic!(positions, gamma, params)
     end
 
     forces, energy = compute_forces(positions, diameters, gamma, params)
     F_norm = sqrt(sum(norm(f)^2 for f in forces))
+
     @warn "FIRE did not converge after $(params.fire_max_steps) steps; final F_norm = $(F_norm)"
-    return energy
+
+    return energy, convergence
 end
 
 ##############################################
@@ -366,13 +393,13 @@ function save_configuration(
         println(f, length(positions))
         println(
             f,
-            "Lattice=\"$(params.Lx) 0 0 $(params.Ly)\" Properties=species:S:1:pos:R:3:radius:R:1",
+            "Lattice=\"$(params.Lx) 0.0 0.0 0.0 $(params.Ly) 0.0 0.0 0.0 0.0\" Properties=type:I:1:id:I:1:radius:R:1:pos:R:2",
         )
-        for i in 1:length(positions)
+        for i in eachindex(positions)
             x = positions[i][1]
             y = positions[i][2]
             radius = diameters[i] / 2.0
-            println(f, "A $x $y 0.0 $radius")
+            println(f, "1 $i $radius $x $y")
         end
     end
 end
@@ -400,10 +427,19 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         diameters = ones(Float64, params.N)
     end
 
-    # Initial energy minimization.
+    # Define the parameters for shearing
+    params.dgamma = 1e-4
+    gamma_max = 0.2
     gamma = 0.0
+    # Initial energy minimization.
     println("Performing initial energy minimization (γ = $gamma)...")
-    e_prev = fire_minimization!(positions, diameters, gamma, params)
+    (e_prev, convergence) = fire_minimization!(positions, diameters, gamma, params)
+    # Check if FIRE converged
+    if !convergence
+        @error "Initial energy minimization did not converge!"
+        return nothing
+    end
+    # Normalize the energy per particle.
     e_prev /= params.N
     println("γ = $gamma, Energy per particle = $e_prev")
     println("Initial Stress tensor:")
@@ -413,19 +449,29 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     save_configuration("initial_configuration.xyz", positions, diameters, params)
 
     # Let's open a file to save the energy information at every step
-    energy_file = open("energy_aqs.txt", "a")
+    energy_file = open("energy_aqs.txt", "w")
+    stress_file = open("stress_aqs.txt", "w")
 
     step = 0
     # Main loop: apply shear until a plastic event is detected.
-    while true
+    while gamma < gamma_max
         step += 1
         # Apply affine shear: x' = x + dγ * y.
         for pos in positions
             pos[1] += params.dgamma * pos[2]
         end
         gamma += params.dgamma
-        apply_periodic!(positions, params)
-        e_current = fire_minimization!(positions, diameters, gamma, params)
+        apply_periodic!(positions, gamma, params)
+        (e_current, convergence) = fire_minimization!(positions, diameters, gamma, params)
+        # Check if FIRE converged
+        if !convergence
+            @error "FIRE did not converge at γ = $gamma !"
+            @info "Stopping the simulation."
+            close(energy_file)
+            close(stress_file)
+            exit(1)
+        end
+        # Normalize the energy per particle.
         e_current /= params.N
 
         # Write and flush the file
@@ -433,25 +479,30 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         flush(energy_file)
 
         println("Step $step: γ = $gamma, Energy per particle = $e_current")
-        println("Stress tensor:")
-        println(compute_stress_tensor(positions, diameters, gamma, params))
+        # Write the xy component of the stress tensor to file
+        stress_value = compute_stress_tensor(positions, diameters, gamma, params)
+        writedlm(stress_file, [gamma stress_value[1, 2]])
+        flush(stress_file)
 
-        if plastic_event_detected(
-            e_prev, e_current, params.dgamma, params.plastic_threshold
-        )
-            println("Plastic event detected at γ = $gamma (step $step)!")
-            # println("Reversing strain direction.")
-            # params.dgamma = -params.dgamma
-            # Optionally, save the configuration at this reversal.
-            save_configuration("plastic_event_γ=$(gamma).xyz", positions, diameters, params)
-            break
-        end
+        # if plastic_event_detected(
+        #     e_prev, e_current, params.dgamma, params.plastic_threshold
+        # )
+        #     println("Plastic event detected at γ = $gamma (step $step)!")
+        #     # println("Reversing strain direction.")
+        #     # params.dgamma = -params.dgamma
+        #     # Optionally, save the configuration at this reversal.
+        #     save_configuration("plastic_event_γ=$(gamma).xyz", positions, diameters, params)
+        #     break
+        # end
         e_prev = e_current
+
+        save_configuration(@sprintf("conf_%.4g.xyz", gamma), positions, diameters, params)
     end
 
     # (Optional) At the end, save the final configuration.
     # save_configuration("final_configuration.xyz", positions, diameters, params)
     close(energy_file)
+    close(stress_file)
 
     return nothing
 end
@@ -459,4 +510,4 @@ end
 ###########################
 # Run the Simulation      #
 ###########################
-run_athermal_quasistatic("ktemp=0.12_n=256/snapshot_step_500000.xyz")
+run_athermal_quasistatic("init.xyz")

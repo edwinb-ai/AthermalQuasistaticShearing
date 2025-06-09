@@ -1,6 +1,7 @@
 # Ignore data files
 *.xyz
 *.txt
+**/snapshot.*
 
 # We don't need the manifest file
 Manifest.toml
