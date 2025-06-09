@@ -30,7 +30,7 @@ function default_params()
         100,       # N (will be overwritten if configuration file is used)
         1.25,      # r_cut
         1e-4,      # dgamma (strain increment)
-        1e-6,      # cg_tol (CG convergence tolerance)
+        1e-5,      # cg_tol (CG convergence tolerance)
         100000,    # cg_max_steps (CG max iterations)
         -1e-6,     # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,       # non_additivity
@@ -127,30 +127,24 @@ end
 ##########################################
 # Pairwise Potential and Force Functions #
 ##########################################
-function pair_potential_energy(
-    r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams
-)
-    σ_eff = 0.5 * (sigma_i + sigma_j)
-    σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
-    if r < params.r_cut * σ_eff
-        term_1 = (σ_eff / r)^12
+function pair_potential_energy(r::Float64, σ_eff::Float64, params::SimulationParams)
+    reduced_r = r / σ_eff
+    if reduced_r < params.r_cut
+        term_1 = (1.0 / reduced_r)^12
         c0 = -28.0 / (params.r_cut^12)
         c2 = 48.0 / (params.r_cut^14)
         c4 = -21.0 / (params.r_cut^16)
-        term_2 = c2 * (r / σ_eff)^2
-        term_3 = c4 * (r / σ_eff)^4
+        term_2 = c2 * (reduced_r)^2
+        term_3 = c4 * (reduced_r)^4
         return term_1 + c0 + term_2 + term_3
     else
         return 0.0
     end
 end
 
-function pair_force(
-    r_vec::Vec2, r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams
-)
-    σ_eff = 0.5 * (sigma_i + sigma_j)
-    σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
-    if r < params.r_cut * σ_eff
+function pair_force(r_vec::Vec2, r::Float64, σ_eff::Float64, params::SimulationParams)
+    reduced_r = r / σ_eff
+    if reduced_r < params.r_cut
         c2 = 48.0 / (params.r_cut^14)
         c4 = -21.0 / (params.r_cut^16)
         force_mag =
@@ -216,8 +210,8 @@ function compute_forces(
                             σ_eff = 0.5 * (sigma_i + sigma_j)
                             σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
                             if r < params.r_cut * σ_eff
-                                energy += pair_potential_energy(r, sigma_i, sigma_j, params)
-                                fpair = pair_force(disp, r, sigma_i, sigma_j, params)
+                                energy += pair_potential_energy(r, σ_eff, params)
+                                fpair = pair_force(disp, r, σ_eff, params)
                                 forces[i] += fpair
                                 forces[j] -= fpair
                             end
@@ -264,8 +258,8 @@ function compute_stress_tensor(
                             σ_eff = 0.5 * (sigma_i + sigma_j)
                             σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
                             if r < params.r_cut * σ_eff
-                                fpair = pair_force(disp, r, sigma_i, sigma_j, params)
-                                stress .+= disp * transpose(fpair)
+                                fpair = pair_force(disp, r, σ_eff, params)
+                                stress .-= disp * transpose(fpair)
                             end
                         end
                     end
@@ -440,7 +434,7 @@ function conjugate_gradient_minimization!(
     # Initial search direction: steepest descent.
     d = [-g_i for g_i in g]
 
-    no_progress_limit = 50
+    no_progress_limit = 20
     no_progress_counter = 0
     best_gradient_norm = Inf
     # Use a variable to check convergence
@@ -448,7 +442,7 @@ function conjugate_gradient_minimization!(
 
     # Wolfe parameters
     c1 = 1e-4
-    c2 = 0.9
+    c2 = 0.2
 
     # Save current positions as x_old.
     x_old = [copy(positions[i]) for i in 1:Np]

@@ -43,13 +43,13 @@ function default_params()
         100,       # N (will be overwritten if configuration file is used)
         default_r_cut,      # r_cut
         0.001,      # dt_initial
-        0.01,      # dt_max
+        0.005,      # dt_max
         1.1,       # f_inc
         0.5,       # f_dec
         0.1,       # alpha0
         5,
         1e-4,      # dgamma (strain increment)
-        1e-8,      # fire_tol
+        1e-6,      # fire_tol
         100000,    # fire_max_steps
         -1e-6,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,        # non_additivity
@@ -107,6 +107,49 @@ function read_configuration(filename::String)
             # Load the positions
             x = parse(Float64, tokens[4])
             y = parse(Float64, tokens[5])
+            positions[i] = Vec2(x, y)
+        end
+        return positions, Lx_file, Ly_file, diameters
+    end
+end
+
+function read_configuration_alt(filename::String)
+    open(filename, "r") do io
+        # First line: number of particles.
+        line = readline(io)
+        N_particles = parse(Int, strip(line))
+
+        # Second line: header. Extract lattice information.
+        header = readline(io)
+        m = match(r"Lattice=\"([^\"]+)\"", header)
+        if m === nothing
+            error("Lattice information not found in header!")
+        end
+        lattice_str = m.captures[1]
+        lattice_tokens = split(lattice_str)
+        if length(lattice_tokens) < 9
+            error("Unexpected lattice format!")
+        end
+        # For 2D, assume Lx is token 1 and Ly is token 5.
+        Lx_file = parse(Float64, lattice_tokens[1])
+        Ly_file = parse(Float64, lattice_tokens[5])
+
+        # Initialize arrays.
+        positions = Vector{Vec2}(undef, N_particles)
+        diameters = Vector{Float64}(undef, N_particles)
+
+        # Read particle data.
+        for i in 1:N_particles
+            line = readline(io)
+            tokens = split(strip(line))
+            if length(tokens) < 4
+                error("Not enough data on line $i of particle data!")
+            end
+            # The file gives radii; convert to diameter.
+            diameters[i] = parse(Float64, tokens[4]) * 2.0
+            # Load the positions
+            x = parse(Float64, tokens[2])
+            y = parse(Float64, tokens[3])
             positions[i] = Vec2(x, y)
         end
         return positions, Lx_file, Ly_file, diameters
@@ -290,14 +333,14 @@ function fire_minimization!(
     # Use a variable to check convergence
     convergence = false
 
-    for _ in 1:(params.fire_max_steps)
+    for step in 1:(params.fire_max_steps)
         forces, energy = compute_forces(positions, diameters, gamma, params)
 
         F_norm = sqrt(sum(norm(f)^2 for f in forces))
 
-        # if mod(step, 100) == 0
-        #     @info "FIRE step $step: F_norm = $(F_norm / sqrt(ndof)), dt = $dt"
-        # end
+        if mod(step, 100) == 0
+            @info "FIRE step $step: F_norm = $(F_norm / sqrt(ndof)), dt = $dt"
+        end
 
         if F_norm / sqrt(ndof) < params.fire_tol
             convergence = true
@@ -378,7 +421,7 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     positions = Vector{Vec2}()
     diameters = Vector{Float64}()
     if filename !== nothing
-        positions_file, Lx_file, Ly_file, diameters_file = read_configuration(filename)
+        positions_file, Lx_file, Ly_file, diameters_file = read_configuration_alt(filename)
         positions = positions_file
         diameters = diameters_file
         params.Lx = Lx_file
@@ -477,4 +520,4 @@ end
 ###########################
 # Run the Simulation      #
 ###########################
-run_athermal_quasistatic("init.xyz")
+run_athermal_quasistatic("ktemp=0.12_n=2000/snapshot_step_5000000.xyz")
