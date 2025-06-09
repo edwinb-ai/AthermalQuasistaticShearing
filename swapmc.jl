@@ -439,7 +439,7 @@ function run_simulation(
     nsteps::Int,
     r_cut::Float64,
     dir_path::String;
-    print_interval::Int=1000,
+    print_interval::Int=10000,
 )
     # Initialize particles on a square lattice to avoid overlaps.
     particles = Particle[]
@@ -524,14 +524,14 @@ end
 # ============================
 function main()
     # Simulation parameters.
-    N = 1024
-    density = 1.01
+    N = 2000
+    density = 1.0
     L = sqrt(N / density)
     temperature = 0.12
     beta = 1.0 / temperature         # Inverse temperature (1/kT).
     delta = 0.2                      # Initial maximum displacement.
     p_swap = 0.2                     # Probability for a swap move.
-    nsteps = 5_000_000                 # Number of Monte Carlo steps.
+    nsteps = 100_000_000                 # Number of Monte Carlo steps.
     r_cut = 1.25                     # Base cutoff distance for the potential.
 
     # Use some of the parameters to make a special directory to
@@ -541,7 +541,7 @@ function main()
 
     # Run the simulation.
     particles, energies = run_simulation(
-        N, L, beta, delta, p_swap, nsteps, r_cut, save_dir; print_interval=10000
+        N, L, beta, delta, p_swap, nsteps, r_cut, save_dir; print_interval=1_000_000
     )
     println("Final energy: ", energies[end])
 
