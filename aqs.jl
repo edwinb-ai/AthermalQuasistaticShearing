@@ -49,7 +49,7 @@ function default_params()
         0.1,       # alpha0
         5,
         1e-4,      # dgamma (strain increment)
-        1e-6,      # fire_tol
+        1e-8,      # fire_tol
         100000,    # fire_max_steps
         -1e-6,       # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,        # non_additivity
@@ -290,14 +290,14 @@ function fire_minimization!(
     # Use a variable to check convergence
     convergence = false
 
-    for step in 1:(params.fire_max_steps)
+    for _ in 1:(params.fire_max_steps)
         forces, energy = compute_forces(positions, diameters, gamma, params)
 
         F_norm = sqrt(sum(norm(f)^2 for f in forces))
 
-        if mod(step, 100) == 0
-            @info "FIRE step $step: F_norm = $(F_norm / sqrt(ndof)), dt = $dt"
-        end
+        # if mod(step, 100) == 0
+        #     @info "FIRE step $step: F_norm = $(F_norm / sqrt(ndof)), dt = $dt"
+        # end
 
         if F_norm / sqrt(ndof) < params.fire_tol
             convergence = true
@@ -411,7 +411,7 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     println(compute_stress_tensor(positions, diameters, gamma, params))
 
     # Create a directory to save everything
-    save_dir = mkdir("aqs_results")
+    save_dir = mkpath("aqs_results")
 
     # Save the initial configuration.
     save_configuration("initial_configuration.xyz", positions, diameters, params)
@@ -462,8 +462,8 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         # end
         e_prev = e_current
 
-        save_filename = joinpath(save_dir, @sprintf("conf_%.4g.xyz", gamma))
-        save_configuration(save_filename, positions, diameters, params)
+        # save_filename = joinpath(save_dir, @sprintf("conf_%.4g.xyz", gamma))
+        # save_configuration(save_filename, positions, diameters, params)
     end
 
     # (Optional) At the end, save the final configuration.

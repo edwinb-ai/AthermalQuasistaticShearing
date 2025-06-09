@@ -103,7 +103,7 @@ end
         pos[2] -= n_y * params.Ly
 
         # 2) apply the shear‐offset for that crossing
-        pos[1] -= n_y * gamma * params.Lx
+        pos[1] -= n_y * gamma * params.Ly
 
         # 3) now wrap x normally
         n_x = floor(Int, pos[1] / params.Lx)
@@ -117,10 +117,10 @@ end
 function minimum_image(pos_i::Vec2, pos_j::Vec2, gamma::Float64, params::SimulationParams)
     dx = pos_i[1] - pos_j[1]
     dy = pos_i[2] - pos_j[2]
-    n_y = round(Int, dy / params.Ly)
+    n_y = floor(Int, dy / params.Ly + 0.5)
     dy -= n_y * params.Ly
-    dx -= gamma * params.Lx * n_y
-    dx -= params.Lx * round(dx / params.Lx)
+    dx -= gamma * params.Ly * n_y
+    dx -= params.Lx * floor(dx / params.Lx + 0.5)
     return Vec2(dx, dy)
 end
 
@@ -167,11 +167,9 @@ end
 function build_cell_list(
     positions::Vector{Vec2}, params::SimulationParams, max_diameter::Float64
 )
-    # A safe upper bound on σ_eff is (max_diameter) * (1 - δ |diff|),
-    # but if you want to be conservative, just use max_diameter.
-    max_r_cut_dist = params.r_cut * max_diameter
-    n_cells_x = max(Int(floor(params.Lx / max_r_cut_dist)), 1)
-    n_cells_y = max(Int(floor(params.Ly / max_r_cut_dist)), 1)
+    max_r_dist = params.r_cut * max_diameter
+    n_cells_y = ceil(Int, params.Ly / max_r_dist)
+    n_cells_x = ceil(Int, params.Lx / max_r_dist)
     cell_size_x = params.Lx / n_cells_x
     cell_size_y = params.Ly / n_cells_y
     cell_list = [Int[] for i in 1:n_cells_x, j in 1:n_cells_y]
@@ -577,7 +575,6 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     # Define the parameters for shearing
     params.dgamma = 1e-4
     gamma_max = 0.2
-    gamma_min = 1e-8
     gamma = 0.0
     # Initial energy minimization.
     println("Performing initial energy minimization (γ = $gamma)...")
@@ -595,12 +592,17 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     println("Initial Stress tensor:")
     println(compute_stress_tensor(positions, diameters, gamma, params))
 
+    # Create a directory to save everything
+    save_dir = mkpath("aqs-cg_results")
+
     # Save the initial configuration.
-    save_configuration("initial_configuration.xyz", positions, diameters, params)
+    save_configuration(
+        joinpath(save_dir, "initial_configuration.xyz"), positions, diameters, params
+    )
 
     # Let's open a file to save the energy information at every step
-    energy_file = open("energy_aqs_cg.txt", "w")
-    stress_file = open("stress_aqs_cg.txt", "w")
+    energy_file = open(joinpath(save_dir, "energy_aqs_cg.txt"), "w")
+    stress_file = open(joinpath(save_dir, "stress_aqs_cg.txt"), "w")
 
     step = 0
     # Main loop: apply shear until a plastic event is detected.
@@ -655,7 +657,8 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         # end
         e_prev = e_current
 
-        save_configuration(@sprintf("conf_%.4g.xyz", gamma), positions, diameters, params)
+        # save_file = joinpath(save_dir, @sprintf("conf_%.4g.xyz", gamma))
+        # save_configuration(save_file, positions, diameters, params)
     end
 
     # (Optional) At the end, save the final configuration.
@@ -669,4 +672,4 @@ end
 ###########################
 # Run the Simulation      #
 ###########################
-run_athermal_quasistatic("init.xyz")
+run_athermal_quasistatic("initial_nve.xyz")
