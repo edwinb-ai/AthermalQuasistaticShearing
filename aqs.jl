@@ -412,29 +412,30 @@ end
 ##############################################
 # Main Simulation: Athermal Quasistatic Shear #
 ##############################################
-function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
+function run_athermal_quasistatic(
+    filename::String; save_dirname::String="results", save_config::Bool=true
+)
+    # Define the parameters and arrays
     params = default_params()
     positions = Vector{Vec2}()
     diameters = Vector{Float64}()
-    if filename !== nothing
-        positions_file, Lx_file, Ly_file, diameters_file = read_configuration(filename)
-        positions = positions_file
-        diameters = diameters_file
-        params.Lx = Lx_file
-        params.Ly = Ly_file
-        params.N = length(positions)
-        println("Configuration loaded from file:")
-        println("  Number of particles: $(params.N)")
-        println("  Lx = $(params.Lx), Ly = $(params.Ly)")
-    else
-        params.N = params.N
-        positions = [Vec2(rand() * params.Lx, rand() * params.Ly) for _ in 1:(params.N)]
-        diameters = ones(Float64, params.N)
-    end
+
+    # Read the configuration from the file
+    positions_file, Lx_file, Ly_file, diameters_file = read_configuration(filename)
+    positions = positions_file
+    diameters = diameters_file
+    params.Lx = Lx_file
+    params.Ly = Ly_file
+    params.N = length(positions)
+    println("Configuration loaded from file:")
+    println("  Number of particles: $(params.N)")
+    println("  Lx = $(params.Lx), Ly = $(params.Ly)")
 
     # Define the parameters for shearing
     gamma_max = 0.2
+    # This accumulates the shear strain.
     gamma = 0.0
+
     # Initial energy minimization.
     println("Performing initial energy minimization (γ = $gamma)...")
     (e_prev, convergence) = fire_minimization!(positions, diameters, gamma, params)
@@ -450,14 +451,13 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     println(compute_stress_tensor(positions, diameters, gamma, params))
 
     # Create a directory to save everything
-    save_dir = mkpath("aqs_results")
+    save_dir = mkpath(save_dirname)
 
     # Save the initial configuration.
     save_configuration("initial_configuration.xyz", positions, diameters, params)
 
     # Let's open a file to save the energy information at every step
-    energy_file = open(joinpath(save_dir, "energy_aqs.txt"), "w")
-    stress_file = open(joinpath(save_dir, "stress_aqs.txt"), "w")
+    results_file = open(joinpath(save_dir, "results_aqs.txt"), "w")
 
     step = 0
     # Main loop: apply shear until a plastic event is detected.
@@ -479,15 +479,11 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         # Normalize the energy per particle.
         e_current /= params.N
 
-        # Write and flush the file
-        println(energy_file, e_current)
-        flush(energy_file)
-
         println("Step $step: γ = $gamma, Energy per particle = $e_current")
         # Write the xy component of the stress tensor to file
         stress_value = compute_stress_tensor(positions, diameters, gamma, params)
-        writedlm(stress_file, [gamma stress_value[1, 2]])
-        flush(stress_file)
+        writedlm(results_file, [gamma stress_value[1, 2] e_current])
+        flush(results_file)
 
         # if plastic_event_detected(
         #     e_prev, e_current, params.dgamma, params.plastic_threshold
@@ -501,14 +497,14 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         # end
         e_prev = e_current
 
-        # save_filename = joinpath(save_dir, @sprintf("conf_%.4g.xyz", gamma))
-        # save_configuration(save_filename, positions, diameters, params)
+        if save_config
+            # Save the configuration at this step.
+            save_filename = joinpath(save_dir, @sprintf("conf_%.4g.xyz", gamma))
+            save_configuration(save_filename, positions, diameters, params)
+        end
     end
 
-    # (Optional) At the end, save the final configuration.
-    # save_configuration("final_configuration.xyz", positions, diameters, params)
-    close(energy_file)
-    close(stress_file)
+    close(results_file)
 
     return nothing
 end
@@ -516,4 +512,4 @@ end
 ###########################
 # Run the Simulation      #
 ###########################
-run_athermal_quasistatic("init.xyz")
+run_athermal_quasistatic("init.xyz"; save_dirname="test-results", save_config=false)
