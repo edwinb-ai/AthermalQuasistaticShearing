@@ -33,6 +33,8 @@ minimization algorithm, using a line search that satisfies the Wolfe
 conditions. However, the FIRE algorithm is preferred since it can reach
 minima in less function calls than conjugate gradient.
 
+Other versions have been included while checking for correctness of the codes and the implementation. For instance, the `aqs_lbfgs.jl` implements the L-BFGS optimization algorithm. The file `aqs_cgopt.jl` tries to use Julia packages to compute the cell lists and the optimization, but this code does not work. The code `aqs_cg_back.jl` implements the same Polak-Ribiere conjugate gradient minimization algorithm, but with backtracking instead of using the strong Wolfe conditions. Finally, `aqs_simple.jl` use the FIRE algorithm but does not use cell lists for computing the forces and the stress tensor, it uses a brute-force double-loop approach.
+
 # References
 
 1. Ninarello, A. Models and Algorithms for the Next Generation of Glass Transition Studies. Phys. Rev. X 7, (2017).
