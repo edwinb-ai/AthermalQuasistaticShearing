@@ -29,8 +29,8 @@ function default_params()
         10.0,      # Ly
         100,       # N (will be overwritten if configuration file is used)
         1.25,      # r_cut
-        1e-5,      # dgamma (strain increment)
-        1e-6,      # cg_tol (CG convergence tolerance)
+        1e-4,      # dgamma (strain increment)
+        1e-5,      # cg_tol (CG convergence tolerance)
         100000,    # cg_max_steps (CG max iterations)
         -1e-6,     # plastic_threshold (plastic event if ΔE/Δγ < threshold)
         0.2,       # non_additivity
@@ -103,7 +103,7 @@ end
         pos[2] -= n_y * params.Ly
 
         # 2) apply the shear‐offset for that crossing
-        pos[1] -= n_y * gamma * params.Lx
+        pos[1] -= n_y * gamma * params.Ly
 
         # 3) now wrap x normally
         n_x = floor(Int, pos[1] / params.Lx)
@@ -117,40 +117,34 @@ end
 function minimum_image(pos_i::Vec2, pos_j::Vec2, gamma::Float64, params::SimulationParams)
     dx = pos_i[1] - pos_j[1]
     dy = pos_i[2] - pos_j[2]
-    n_y = round(Int, dy / params.Ly)
+    n_y = floor(Int, dy / params.Ly + 0.5)
     dy -= n_y * params.Ly
-    dx -= gamma * params.Lx * n_y
-    dx -= params.Lx * round(dx / params.Lx)
+    dx -= gamma * params.Ly * n_y
+    dx -= params.Lx * floor(dx / params.Lx + 0.5)
     return Vec2(dx, dy)
 end
 
 ##########################################
 # Pairwise Potential and Force Functions #
 ##########################################
-function pair_potential_energy(
-    r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams
-)
-    σ_eff = 0.5 * (sigma_i + sigma_j)
-    σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
-    if r < params.r_cut * σ_eff
-        term_1 = (σ_eff / r)^12
+function pair_potential_energy(r::Float64, σ_eff::Float64, params::SimulationParams)
+    reduced_r = r / σ_eff
+    if reduced_r < params.r_cut
+        term_1 = (1.0 / reduced_r)^12
         c0 = -28.0 / (params.r_cut^12)
         c2 = 48.0 / (params.r_cut^14)
         c4 = -21.0 / (params.r_cut^16)
-        term_2 = c2 * (r / σ_eff)^2
-        term_3 = c4 * (r / σ_eff)^4
+        term_2 = c2 * (reduced_r)^2
+        term_3 = c4 * (reduced_r)^4
         return term_1 + c0 + term_2 + term_3
     else
         return 0.0
     end
 end
 
-function pair_force(
-    r_vec::Vec2, r::Float64, sigma_i::Float64, sigma_j::Float64, params::SimulationParams
-)
-    σ_eff = 0.5 * (sigma_i + sigma_j)
-    σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
-    if r < params.r_cut * σ_eff
+function pair_force(r_vec::Vec2, r::Float64, σ_eff::Float64, params::SimulationParams)
+    reduced_r = r / σ_eff
+    if reduced_r < params.r_cut
         c2 = 48.0 / (params.r_cut^14)
         c4 = -21.0 / (params.r_cut^16)
         force_mag =
@@ -167,11 +161,9 @@ end
 function build_cell_list(
     positions::Vector{Vec2}, params::SimulationParams, max_diameter::Float64
 )
-    # A safe upper bound on σ_eff is (max_diameter) * (1 - δ |diff|),
-    # but if you want to be conservative, just use max_diameter.
-    max_r_cut_dist = params.r_cut * max_diameter
-    n_cells_x = max(Int(floor(params.Lx / max_r_cut_dist)), 1)
-    n_cells_y = max(Int(floor(params.Ly / max_r_cut_dist)), 1)
+    max_r_dist = params.r_cut * max_diameter
+    n_cells_y = ceil(Int, params.Ly / max_r_dist)
+    n_cells_x = ceil(Int, params.Lx / max_r_dist)
     cell_size_x = params.Lx / n_cells_x
     cell_size_y = params.Ly / n_cells_y
     cell_list = [Int[] for i in 1:n_cells_x, j in 1:n_cells_y]
@@ -218,8 +210,8 @@ function compute_forces(
                             σ_eff = 0.5 * (sigma_i + sigma_j)
                             σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
                             if r < params.r_cut * σ_eff
-                                energy += pair_potential_energy(r, sigma_i, sigma_j, params)
-                                fpair = pair_force(disp, r, sigma_i, sigma_j, params)
+                                energy += pair_potential_energy(r, σ_eff, params)
+                                fpair = pair_force(disp, r, σ_eff, params)
                                 forces[i] += fpair
                                 forces[j] -= fpair
                             end
@@ -266,8 +258,8 @@ function compute_stress_tensor(
                             σ_eff = 0.5 * (sigma_i + sigma_j)
                             σ_eff *= (1.0 - params.non_additivity * abs(sigma_i - sigma_j))
                             if r < params.r_cut * σ_eff
-                                fpair = pair_force(disp, r, sigma_i, sigma_j, params)
-                                stress .+= disp * transpose(fpair)
+                                fpair = pair_force(disp, r, σ_eff, params)
+                                stress .-= disp * transpose(fpair)
                             end
                         end
                     end
@@ -442,7 +434,7 @@ function conjugate_gradient_minimization!(
     # Initial search direction: steepest descent.
     d = [-g_i for g_i in g]
 
-    no_progress_limit = 50
+    no_progress_limit = 20
     no_progress_counter = 0
     best_gradient_norm = Inf
     # Use a variable to check convergence
@@ -450,7 +442,7 @@ function conjugate_gradient_minimization!(
 
     # Wolfe parameters
     c1 = 1e-4
-    c2 = 0.9
+    c2 = 0.2
 
     # Save current positions as x_old.
     x_old = [copy(positions[i]) for i in 1:Np]
@@ -577,7 +569,6 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     # Define the parameters for shearing
     params.dgamma = 1e-4
     gamma_max = 0.2
-    gamma_min = 1e-8
     gamma = 0.0
     # Initial energy minimization.
     println("Performing initial energy minimization (γ = $gamma)...")
@@ -595,12 +586,17 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
     println("Initial Stress tensor:")
     println(compute_stress_tensor(positions, diameters, gamma, params))
 
+    # Create a directory to save everything
+    save_dir = mkpath("aqs-cg_results")
+
     # Save the initial configuration.
-    save_configuration("initial_configuration.xyz", positions, diameters, params)
+    save_configuration(
+        joinpath(save_dir, "initial_configuration.xyz"), positions, diameters, params
+    )
 
     # Let's open a file to save the energy information at every step
-    energy_file = open("energy_aqs_cg.txt", "w")
-    stress_file = open("stress_aqs_cg.txt", "w")
+    energy_file = open(joinpath(save_dir, "energy_aqs_cg.txt"), "w")
+    stress_file = open(joinpath(save_dir, "stress_aqs_cg.txt"), "w")
 
     step = 0
     # Main loop: apply shear until a plastic event is detected.
@@ -617,16 +613,16 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         )
         # Check if CG converged
         if !convergence
-            @error "Conjugate Gradient did not converge at γ = $gamma!"
-            @info "Halving the strain increment and retrying..."
-            if params.dgamma < gamma_min
-                @error "Strain increment too small; stopping simulation."
-                exit(1)
-            end
-            params.dgamma /= 2.0
-            gamma -= params.dgamma  # Roll back the gamma increment
-            step -= 1  # Roll back the step count
-            continue
+            @error "Conjugate Gradient did not converge at γ = $gamma"
+            # @info "Halving the strain increment and retrying..."
+            # if params.dgamma < gamma_min
+            #     @error "Strain increment too small; stopping simulation."
+            #     exit(1)
+            # end
+            # params.dgamma /= 2.0
+            # gamma -= params.dgamma  # Roll back the gamma increment
+            # step -= 1  # Roll back the step count
+            break
         end
         # Normalize the energy per particle.
         e_current /= params.N
@@ -655,7 +651,8 @@ function run_athermal_quasistatic(filename::Union{Nothing,String}=nothing)
         # end
         e_prev = e_current
 
-        save_configuration(@sprintf("conf_%.4g.xyz", gamma), positions, diameters, params)
+        # save_file = joinpath(save_dir, @sprintf("conf_%.4g.xyz", gamma))
+        # save_configuration(save_file, positions, diameters, params)
     end
 
     # (Optional) At the end, save the final configuration.
@@ -669,4 +666,4 @@ end
 ###########################
 # Run the Simulation      #
 ###########################
-run_athermal_quasistatic("initial_poly.xyz")
+run_athermal_quasistatic("initial_nve.xyz")
