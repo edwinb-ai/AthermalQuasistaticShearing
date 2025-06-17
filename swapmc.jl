@@ -523,24 +523,32 @@ end
 # Main Program
 # ============================
 function main()
+    # Parse command line arguments
+    if length(ARGS) != 1
+        println("Usage: julia monte_carlo_simulation.jl <temperature>")
+        println("Example: julia monte_carlo_simulation.jl 0.05")
+        exit(1)
+    end
+
+    temperature = parse(Float64, ARGS[1])
+
     # Simulation parameters.
-    N = 2000
+    N = 20_000
     density = 1.0
     L = sqrt(N / density)
-    temperature = 0.05
     beta = 1.0 / temperature         # Inverse temperature (1/kT).
     delta = 0.2                      # Initial maximum displacement.
     p_swap = 0.2                     # Probability for a swap move.
-    nsteps = 100_000_000                 # Number of Monte Carlo steps.
+    nsteps = 1_000_000_000                 # Number of Monte Carlo steps.
     r_cut = 1.25                     # Base cutoff distance for the potential.
 
     # Use some of the parameters to make a special directory to
     # save the configurations
-    save_dir = "ktemp=$(temperature)_n=$(N)"
+    save_dir = joinpath("large_system", "ktemp=$(temperature)_n=$(N)")
     mkpath(save_dir)
 
     # Run the simulation.
-    particles, energies = run_simulation(
+    _, energies = run_simulation(
         N, L, beta, delta, p_swap, nsteps, r_cut, save_dir; print_interval=1_000_000
     )
     println("Final energy: ", energies[end])
