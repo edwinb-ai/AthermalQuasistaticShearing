@@ -142,9 +142,9 @@ function read_configuration_alt(filename::String)
         if length(lattice_tokens) < 4
             error("Unexpected lattice format!")
         end
-        # For 2D, assume Lx is token 1 and Ly is token 5.
+        # For 2D, assume Lx is token 1 and Ly is token 4
         Lx_file = parse(Float64, lattice_tokens[1])
-        Ly_file = parse(Float64, lattice_tokens[5])
+        Ly_file = parse(Float64, lattice_tokens[4])
 
         # Initialize arrays.
         positions = Vector{Vec2}(undef, N_particles)
@@ -154,7 +154,7 @@ function read_configuration_alt(filename::String)
         for i in 1:N_particles
             line = readline(io)
             tokens = split(strip(line))
-            # Here we expect species, id, radius, x, y and z = 0, so 5 in total
+            # Here we expect species, radius, x, y and z = 0, so 5 in total
             if length(tokens) < 5
                 error("Not enough data on line $i of particle data!")
             end
@@ -464,14 +464,12 @@ function run_athermal_quasistatic(
     println(compute_stress_tensor(positions, diameters, gamma, params))
 
     # Create a directory to save everything
-    save_dir = mkpath("aqs_results_ktemp=0.12_n=$(params.N)")
     save_dir = mkpath(save_dirname)
 
     # Save the initial configuration.
     save_configuration("initial_configuration.xyz", positions, diameters, params)
 
     # Let's open a file to save the energy information at every step
-    results_file = open(joinpath(save_dir, "results_aqs.txt"), "w")
     results_file = open(joinpath(save_dir, "results_aqs.txt"), "w")
 
     step = 0
@@ -530,4 +528,18 @@ end
 ###########################
 # Run the Simulation      #
 ###########################
-run_athermal_quasistatic("init.xyz"; save_dirname="test-results", save_config=false)
+function main()
+    n_particles = 2000
+    temperature = 0.12
+    working_dir = "ktemp=$(temperature)_n=$(n_particles)"
+    save_dir = "aqs_results-ktemp=$(temperature)_n=$(n_particles)"
+    run_athermal_quasistatic(
+        joinpath(working_dir, "snapshot_step_100000000.xyz");
+        save_dirname=save_dir,
+        save_config=true,
+    )
+
+    return nothing
+end
+
+main()
