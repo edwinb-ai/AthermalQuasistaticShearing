@@ -527,7 +527,7 @@ function main()
     N = 2000
     density = 1.0
     L = sqrt(N / density)
-    temperature = 0.12
+    temperature = 0.05
     beta = 1.0 / temperature         # Inverse temperature (1/kT).
     delta = 0.2                      # Initial maximum displacement.
     p_swap = 0.2                     # Probability for a swap move.

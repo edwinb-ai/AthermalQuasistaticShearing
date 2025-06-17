@@ -2,6 +2,9 @@
 *.xyz
 *.txt
 **/snapshot.*
+# SLURM files and logs
+slurm*.out
+*.slurm
 
 # We don't need the manifest file
 Manifest.toml

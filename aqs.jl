@@ -42,7 +42,7 @@ function default_params()
         10.0,      # Ly
         100,       # N (will be overwritten if configuration file is used)
         default_r_cut,      # r_cut
-        0.001,      # dt_initial
+        0.005,      # dt_initial
         0.01,      # dt_max
         1.1,       # f_inc
         0.5,       # f_dec
@@ -113,6 +113,17 @@ function read_configuration(filename::String)
     end
 end
 
+"""
+This functions read a configuration file with the following format:
+
+2000
+Lattice="44.721359549995796 0 0 44.721359549995796" Properties=species:S:1:pos:R:3:radius:R:1 step=1000000
+A 0.7929271081743389 0.5983718258660623 0.0 0.42053595688948275
+
+The first line contains the number of particles.
+The second line contains the lattice information and properties.
+The subsequent lines contain the particle data, with species, position (x, y, z = 0), and radius.
+"""
 function read_configuration_alt(filename::String)
     open(filename, "r") do io
         # First line: number of particles.
@@ -127,7 +138,8 @@ function read_configuration_alt(filename::String)
         end
         lattice_str = m.captures[1]
         lattice_tokens = split(lattice_str)
-        if length(lattice_tokens) < 9
+        # Notice that we only have 4 elements in the lattice string for 2D.
+        if length(lattice_tokens) < 4
             error("Unexpected lattice format!")
         end
         # For 2D, assume Lx is token 1 and Ly is token 5.
@@ -142,15 +154,16 @@ function read_configuration_alt(filename::String)
         for i in 1:N_particles
             line = readline(io)
             tokens = split(strip(line))
-            if length(tokens) < 4
+            # Here we expect species, id, radius, x, y and z = 0, so 5 in total
+            if length(tokens) < 5
                 error("Not enough data on line $i of particle data!")
             end
-            # The file gives radii; convert to diameter.
-            diameters[i] = parse(Float64, tokens[4]) * 2.0
             # Load the positions
             x = parse(Float64, tokens[2])
             y = parse(Float64, tokens[3])
             positions[i] = Vec2(x, y)
+            # The file gives radii; convert to diameter.
+            diameters[i] = parse(Float64, tokens[5]) * 2.0
         end
         return positions, Lx_file, Ly_file, diameters
     end
@@ -421,7 +434,7 @@ function run_athermal_quasistatic(
     diameters = Vector{Float64}()
 
     # Read the configuration from the file
-    positions_file, Lx_file, Ly_file, diameters_file = read_configuration(filename)
+    positions_file, Lx_file, Ly_file, diameters_file = read_configuration_alt(filename)
     positions = positions_file
     diameters = diameters_file
     params.Lx = Lx_file
@@ -451,12 +464,14 @@ function run_athermal_quasistatic(
     println(compute_stress_tensor(positions, diameters, gamma, params))
 
     # Create a directory to save everything
+    save_dir = mkpath("aqs_results_ktemp=0.12_n=$(params.N)")
     save_dir = mkpath(save_dirname)
 
     # Save the initial configuration.
     save_configuration("initial_configuration.xyz", positions, diameters, params)
 
     # Let's open a file to save the energy information at every step
+    results_file = open(joinpath(save_dir, "results_aqs.txt"), "w")
     results_file = open(joinpath(save_dir, "results_aqs.txt"), "w")
 
     step = 0
@@ -474,6 +489,7 @@ function run_athermal_quasistatic(
         if !convergence
             @error "FIRE did not converge at γ = $gamma"
             @info "Stopping the simulation."
+            close(results_file)
             break
         end
         # Normalize the energy per particle.
@@ -482,6 +498,8 @@ function run_athermal_quasistatic(
         println("Step $step: γ = $gamma, Energy per particle = $e_current")
         # Write the xy component of the stress tensor to file
         stress_value = compute_stress_tensor(positions, diameters, gamma, params)
+        writedlm(results_file, [gamma stress_value[1, 2] e_current])
+        flush(results_file)
         writedlm(results_file, [gamma stress_value[1, 2] e_current])
         flush(results_file)
 
